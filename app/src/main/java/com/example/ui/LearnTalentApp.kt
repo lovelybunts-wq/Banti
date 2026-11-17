@@ -60,6 +60,7 @@ import com.example.data.model.NoteType
 import com.example.data.model.UiState
 import com.example.data.remote.GoogleDriveBackupManager
 import com.example.data.remote.StudyRepository
+import com.example.auth.GoogleAuthHelper
 import com.example.ui.auth.AuthScreen
 import com.example.ui.components.WhatsAppRequestDialog
 import com.example.ui.navigation.HtmlTestRoute
@@ -93,6 +94,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
@@ -120,7 +122,10 @@ fun LearnTalentApp(
         fileStorage.getCustomLogoFile(localSettings.customLogoFileName)
     }
 
-    val currentUser by Firebase.auth.authStateFlow().collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
+    val firebaseReady = remember { GoogleAuthHelper.isFirebaseInitialized(context) }
+    val currentUser by remember(firebaseReady) {
+        if (firebaseReady) Firebase.auth.authStateFlow() else flowOf(null)
+    }.collectAsStateWithLifecycle(initialValue = GoogleAuthHelper.safeCurrentUser(context))
 
     LearnTalentTheme(themeOption = localSettings.themeOption) {
         val user = currentUser

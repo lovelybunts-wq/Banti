@@ -80,8 +80,6 @@ import com.example.ui.components.Tactile3DCard
 import com.example.ui.components.TactileIconOrb
 import com.example.ui.theme.LocalStudyTheme
 import com.example.ui.theme.StudyThemeOption
-import com.google.firebase.Firebase
-import com.google.firebase.auth.auth
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -116,7 +114,7 @@ fun SettingsScreen(
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
-    val user = Firebase.auth.currentUser
+    val user = GoogleAuthHelper.safeCurrentUser(context)
     val isOnline = remember { LocalFileStorage.isOnline(context) }
     val biometricSupported = remember { BiometricLockHelper.canAuthenticate(context) }
 
