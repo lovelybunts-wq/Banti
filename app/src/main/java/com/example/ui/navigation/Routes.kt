@@ -15,7 +15,11 @@ data class SubtopicsRoute(val subjectId: String, val topicId: String)
 data class SubtopicDetailRoute(val subjectId: String, val topicId: String, val subtopicId: String)
 
 @Serializable
-data class PdfViewerRoute(val noteId: String)
+data class PdfViewerRoute(
+    val noteId: String = "",
+    val localFileName: String? = null,
+    val title: String? = null,
+)
 
 @Serializable
 data class ImageViewerRoute(val noteId: String)

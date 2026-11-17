@@ -143,9 +143,25 @@ service cloud.firestore {
              data.title is string && data.title.size() >= 1 && data.title.size() <= 150 &&
              (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 80)) &&
              data.sourceName is string && data.sourceName.size() >= 1 && data.sourceName.size() <= 150 &&
-             data.content is string && data.content.size() >= 1 && data.content.size() <= 5000 &&
+             data.content is string && data.content.size() <= 5000 &&
+             (!('pdfTitle' in data) || (data.pdfTitle is string && data.pdfTitle.size() <= 150)) &&
+             (!('pdfLocalFileName' in data) || (data.pdfLocalFileName is string && data.pdfLocalFileName.size() <= 200)) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /appConfig/support {
+      allow get: if isSignedIn();
+      allow create, update: if isSignedIn() &&
+                               request.auth.token.email == 'lovely.bunts@gmail.com' &&
+                               incoming().keys().hasAll(['whatsappDigits', 'updatedAt']) &&
+                               incoming().keys().hasOnly(['whatsappDigits', 'updatedAt']) &&
+                               incoming().whatsappDigits is string &&
+                               incoming().whatsappDigits.size() >= 10 &&
+                               incoming().whatsappDigits.size() <= 20 &&
+                               incoming().updatedAt is timestamp &&
+                               incoming().updatedAt <= request.time;
+      allow delete: if false;
     }
 
     match /users/{userId} {
@@ -307,14 +323,14 @@ service cloud.firestore {
         allow list: if isOwner(userId);
         allow create: if isOwner(userId) && isValidId(entryId) &&
                          incoming().keys().hasAll(['userId', 'dateKey', 'title', 'sourceName', 'content', 'createdAt', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['userId', 'dateKey', 'title', 'subjectName', 'sourceName', 'content', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'dateKey', 'title', 'subjectName', 'sourceName', 'content', 'pdfTitle', 'pdfLocalFileName', 'createdAt', 'updatedAt']) &&
                          isValidRevisionDiary(incoming(), userId);
         allow update: if isSignedIn() &&
                          isValidRevisionDiary(incoming(), userId) &&
                          isOwner(userId) && isValidId(entryId) &&
                          incoming().userId == existing().userId &&
                          incoming().createdAt == existing().createdAt &&
-                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'subjectName', 'sourceName', 'content', 'updatedAt']);
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'subjectName', 'sourceName', 'content', 'pdfTitle', 'pdfLocalFileName', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(entryId);
       }
     }

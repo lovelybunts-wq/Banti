@@ -173,6 +173,8 @@ data class RevisionDiaryEntry(
     val subjectName: String? = null,
     val sourceName: String = "",
     val content: String = "",
+    val pdfTitle: String? = null,
+    val pdfLocalFileName: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )

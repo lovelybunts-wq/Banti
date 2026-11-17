@@ -27,6 +27,9 @@ data class LocalAppSettings(
     val adminWhatsAppNumber: String = "",
     val customLogoFileName: String = "",
     val lastDriveBackupMillis: Long = 0L,
+    val driveUserId: String = "",
+    val driveUserEmail: String = "",
+    val driveUserName: String = "",
 )
 
 class UserPreferencesManager(private val context: Context) {
@@ -42,6 +45,9 @@ class UserPreferencesManager(private val context: Context) {
         val ADMIN_WHATSAPP_NUMBER = stringPreferencesKey("admin_whatsapp_number")
         val CUSTOM_LOGO_FILE_NAME = stringPreferencesKey("custom_logo_file_name")
         val LAST_DRIVE_BACKUP_MILLIS = longPreferencesKey("last_drive_backup_millis")
+        val DRIVE_USER_ID = stringPreferencesKey("drive_user_id")
+        val DRIVE_USER_EMAIL = stringPreferencesKey("drive_user_email")
+        val DRIVE_USER_NAME = stringPreferencesKey("drive_user_name")
         fun seededKey(uid: String) = booleanPreferencesKey("seeded_$uid")
     }
 
@@ -58,6 +64,9 @@ class UserPreferencesManager(private val context: Context) {
             adminWhatsAppNumber = prefs[Keys.ADMIN_WHATSAPP_NUMBER] ?: "",
             customLogoFileName = prefs[Keys.CUSTOM_LOGO_FILE_NAME] ?: "",
             lastDriveBackupMillis = prefs[Keys.LAST_DRIVE_BACKUP_MILLIS] ?: 0L,
+            driveUserId = prefs[Keys.DRIVE_USER_ID] ?: "",
+            driveUserEmail = prefs[Keys.DRIVE_USER_EMAIL] ?: "",
+            driveUserName = prefs[Keys.DRIVE_USER_NAME] ?: "",
         )
     }
 
@@ -101,10 +110,37 @@ class UserPreferencesManager(private val context: Context) {
         context.dataStore.edit { it[Keys.LAST_DRIVE_BACKUP_MILLIS] = millis }
     }
 
+    suspend fun setDriveUserSession(userId: String, email: String, name: String) {
+        context.dataStore.edit {
+            it[Keys.DRIVE_USER_ID] = userId
+            it[Keys.DRIVE_USER_EMAIL] = email
+            it[Keys.DRIVE_USER_NAME] = name
+        }
+    }
+
+    suspend fun clearDriveUserSession() {
+        context.dataStore.edit {
+            it.remove(Keys.DRIVE_USER_ID)
+            it.remove(Keys.DRIVE_USER_EMAIL)
+            it.remove(Keys.DRIVE_USER_NAME)
+        }
+    }
+
     fun isSeededFlow(uid: String): Flow<Boolean> =
         context.dataStore.data.map { it[Keys.seededKey(uid)] ?: false }
 
     suspend fun markSeeded(uid: String) {
         context.dataStore.edit { it[Keys.seededKey(uid)] = true }
+    }
+
+    companion object {
+        const val ADMIN_EMAIL = "lovely.bunts@gmail.com"
+        const val DEFAULT_ADMIN_WHATSAPP_DIGITS = "917049126747"
+
+        fun normalizePhoneDigits(raw: String): String {
+            val digits = raw.filter { it.isDigit() }
+            if (digits.isEmpty()) return ""
+            return if (digits.length == 10) "91$digits" else digits
+        }
     }
 }

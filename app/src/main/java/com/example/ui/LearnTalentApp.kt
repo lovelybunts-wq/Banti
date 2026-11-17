@@ -127,25 +127,55 @@ fun LearnTalentApp(
         if (firebaseReady) Firebase.auth.authStateFlow() else flowOf(null)
     }.collectAsStateWithLifecycle(initialValue = GoogleAuthHelper.safeCurrentUser(context))
 
+    var pendingInitialDriveToken by remember { mutableStateOf<String?>(null) }
+
     LearnTalentTheme(themeOption = localSettings.themeOption) {
         val user = currentUser
-        if (user == null && !localSettings.offlineModeAccepted) {
+        val driveUid = localSettings.driveUserId.takeIf { it.isNotBlank() }
+        if (user == null && driveUid == null && !localSettings.offlineModeAccepted) {
             AuthScreen(
                 customLogoFile = customLogoFile,
                 onAuthSuccess = {},
+                onDriveSignInSuccess = { profile, token ->
+                    pendingInitialDriveToken = token
+                    scope.launch {
+                        prefs.setDriveUserSession(profile.id, profile.email, profile.name)
+                        prefs.setOfflineModeAccepted(false)
+                    }
+                },
                 onContinueOffline = {
                     scope.launch { prefs.setOfflineModeAccepted(true) }
                 }
             )
         } else {
-            val sessionKey = user?.uid ?: LocalOfflineStore.OFFLINE_UID
+            val sessionKey = user?.uid ?: driveUid ?: LocalOfflineStore.OFFLINE_UID
+            val resolvedDisplayName = user?.displayName?.takeIf { it.isNotBlank() }
+                ?: localSettings.driveUserName.takeIf { it.isNotBlank() }
+                ?: "Offline Learner"
+            val resolvedEmail = user?.email?.takeIf { it.isNotBlank() }
+                ?: localSettings.driveUserEmail.takeIf { it.isNotBlank() }
             key(sessionKey) {
                 AuthenticatedAppContent(
                     firebaseUid = user?.uid,
-                    displayName = user?.displayName ?: "Offline Learner",
+                    driveUserId = driveUid,
+                    signedInEmail = resolvedEmail,
+                    displayName = resolvedDisplayName,
+                    initialDriveToken = pendingInitialDriveToken,
+                    onConsumeInitialDriveToken = { pendingInitialDriveToken = null },
                     isCompactWidth = isCompactWidth,
-                    onSignedOutResetOffline = {
-                        scope.launch { prefs.setOfflineModeAccepted(false) }
+                    onDriveSignInSuccess = { profile, token ->
+                        pendingInitialDriveToken = token
+                        scope.launch {
+                            prefs.setDriveUserSession(profile.id, profile.email, profile.name)
+                            prefs.setOfflineModeAccepted(false)
+                        }
+                    },
+                    onSignedOutResetSession = {
+                        pendingInitialDriveToken = null
+                        scope.launch {
+                            prefs.clearDriveUserSession()
+                            prefs.setOfflineModeAccepted(false)
+                        }
                     }
                 )
             }
@@ -156,12 +186,20 @@ fun LearnTalentApp(
 @Composable
 private fun AuthenticatedAppContent(
     firebaseUid: String?,
+    driveUserId: String?,
+    signedInEmail: String?,
     displayName: String,
+    initialDriveToken: String?,
+    onConsumeInitialDriveToken: () -> Unit,
     isCompactWidth: Boolean,
-    onSignedOutResetOffline: () -> Unit,
+    onDriveSignInSuccess: (profile: com.example.data.remote.GoogleDriveProfile, accessToken: String) -> Unit,
+    onSignedOutResetSession: () -> Unit,
 ) {
-    val sessionKey = firebaseUid ?: LocalOfflineStore.OFFLINE_UID
+    val sessionKey = firebaseUid
+        ?: driveUserId?.takeIf { it.isNotBlank() }
+        ?: LocalOfflineStore.OFFLINE_UID
     val driveBackupManager = remember { GoogleDriveBackupManager() }
+    val isAdminUser = signedInEmail.equals(UserPreferencesManager.ADMIN_EMAIL, ignoreCase = true)
 
     val viewModel: MainViewModel = viewModel(
         key = sessionKey,
@@ -173,17 +211,26 @@ private fun AuthenticatedAppContent(
                     StudyRepository(FirebaseFirestore.getInstance(databaseId))
                 } else null
                 MainViewModel(
+                    appContext = app.applicationContext,
                     repository = repo,
-                    offlineStore = LocalOfflineStore(app.applicationContext),
+                    offlineStore = LocalOfflineStore(app.applicationContext, ownerId = sessionKey),
                     fileStorage = LocalFileStorage(app.applicationContext),
                     prefs = UserPreferencesManager(app.applicationContext),
                     driveBackupManager = driveBackupManager,
                     firebaseUid = firebaseUid,
+                    driveUserId = driveUserId,
                     initialDisplayName = displayName,
                 )
             }
         }
     )
+
+    LaunchedEffect(initialDriveToken, viewModel) {
+        if (!initialDriveToken.isNullOrBlank()) {
+            viewModel.triggerDriveSyncAfterLogin(initialDriveToken)
+            onConsumeInitialDriveToken()
+        }
+    }
 
     val localSettings by viewModel.localSettings.collectAsStateWithLifecycle()
     val customLogoFile = remember(localSettings.customLogoFileName) {
@@ -528,11 +575,15 @@ private fun AuthenticatedAppContent(
 
                     composable<PdfViewerRoute> { entry ->
                         val route = entry.toRoute<PdfViewerRoute>()
-                        val note = notes.firstOrNull { it.id == route.noteId }
-                        val file = viewModel.getLocalFile(note?.localFileName)
+                        val note = route.noteId.takeIf { it.isNotBlank() }?.let { id ->
+                            notes.firstOrNull { it.id == id }
+                        }
+                        val resolvedFileName = note?.localFileName ?: route.localFileName
+                        val file = viewModel.getLocalFile(resolvedFileName)
                         PdfViewerScreen(
                             note = note,
                             pdfFile = file,
+                            directTitle = route.title,
                             onBack = { navController.popBackStack() }
                         )
                     }
@@ -613,13 +664,28 @@ private fun AuthenticatedAppContent(
                             },
                             onToggleCompleted = { viewModel.toggleStudyLogCompleted(it) },
                             onDeleteLog = { viewModel.deleteStudyLog(it) },
-                            onAddDiaryEntry = { title, subj, src, content ->
-                                viewModel.addRevisionDiaryEntry(title, subj, src, content)
+                            onAddDiaryEntry = { title, subj, src, content, pdfUri ->
+                                viewModel.addRevisionDiaryEntry(title, subj, src, content, pdfUri)
                             },
-                            onUpdateDiaryEntry = { id, title, subj, src, content ->
-                                viewModel.updateRevisionDiaryEntry(id, title, subj, src, content)
+                            onUpdateDiaryEntry = { id, title, subj, src, content, pdfUri, existingPdfTitle, existingPdfFileName, removePdf ->
+                                viewModel.updateRevisionDiaryEntry(
+                                    entryId = id,
+                                    title = title,
+                                    subjectName = subj,
+                                    sourceName = src,
+                                    content = content,
+                                    pdfUri = pdfUri,
+                                    existingPdfTitle = existingPdfTitle,
+                                    existingPdfFileName = existingPdfFileName,
+                                    removePdf = removePdf
+                                )
                             },
                             onDeleteDiaryEntry = { viewModel.deleteRevisionDiaryEntry(it) },
+                            onOpenDiaryPdf = { fileName, title ->
+                                navController.navigate(
+                                    PdfViewerRoute(localFileName = fileName, title = title)
+                                )
+                            },
                             onSaveExamGoal = { name, millis, subjList, autoPlan ->
                                 viewModel.updateExamGoal(name, millis, subjList, autoPlan)
                             },
@@ -633,6 +699,9 @@ private fun AuthenticatedAppContent(
                         SettingsScreen(
                             localSettings = localSettings,
                             isOfflineSession = viewModel.isOfflineSession,
+                            signedInEmail = signedInEmail,
+                            signedInName = displayName,
+                            isAdminUser = isAdminUser,
                             isDriveBusy = isDriveBusy,
                             customLogoFile = customLogoFile,
                             driveBackupManager = driveBackupManager,
@@ -649,10 +718,11 @@ private fun AuthenticatedAppContent(
                             onBuildBackupJson = { viewModel.buildBackupJson() },
                             onRestoreBackupJson = { viewModel.restoreFromBackupJson(it) },
                             onShowMessage = { viewModel.showToast(it) },
-                            onSignedOut = onSignedOutResetOffline,
+                            onSignedOut = onSignedOutResetSession,
                             onSignedInFromOffline = {
                                 viewModel.showToast("Google लॉगिन सफल! डेटा सिंक हो रहा है...")
-                            }
+                            },
+                            onDriveSignInSuccess = onDriveSignInSuccess
                         )
                     }
                 }
@@ -667,7 +737,6 @@ private fun AuthenticatedAppContent(
             initialTopic = prefill.topic,
             initialSubtopic = prefill.subtopic,
             savedAdminNumber = localSettings.adminWhatsAppNumber,
-            onSaveAdminNumber = { viewModel.saveAdminWhatsAppNumber(it) },
             onShowMessage = { viewModel.showToast(it) },
             onDismiss = { whatsAppPrefill = null }
         )

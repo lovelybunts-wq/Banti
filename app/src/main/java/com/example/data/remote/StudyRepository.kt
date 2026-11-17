@@ -840,8 +840,10 @@ class StudyRepository(
         subjectName: String?,
         sourceName: String,
         content: String,
+        pdfTitle: String? = null,
+        pdfLocalFileName: String? = null,
+        docId: String = "diary_${newValidId()}",
     ): Result<String> {
-        val docId = "diary_${newValidId()}"
         val path = "users/$uid/revisionDiary/$docId"
         return try {
             requireUserId(uid)
@@ -852,8 +854,10 @@ class StudyRepository(
                 "dateKey" to dateKey.take(20),
                 "title" to safeTitle,
                 "subjectName" to subjectName?.trim()?.takeIf { it.isNotEmpty() }?.take(80),
-                "sourceName" to sourceName.trim().take(150),
+                "sourceName" to sourceName.trim().ifBlank { "Self Study" }.take(150),
                 "content" to content.trim().take(5000),
+                "pdfTitle" to pdfTitle?.trim()?.takeIf { it.isNotEmpty() }?.take(150),
+                "pdfLocalFileName" to pdfLocalFileName?.trim()?.takeIf { it.isNotEmpty() }?.take(200),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp(),
             ).filterValues { it != null } as Map<String, Any>
@@ -874,6 +878,8 @@ class StudyRepository(
         subjectName: String?,
         sourceName: String,
         content: String,
+        pdfTitle: String? = null,
+        pdfLocalFileName: String? = null,
     ): Result<Unit> {
         val path = "users/$uid/revisionDiary/$entryId"
         return try {
@@ -882,12 +888,18 @@ class StudyRepository(
             require(safeTitle.isNotEmpty()) { "Title cannot be empty." }
             val payload = mutableMapOf<String, Any>(
                 "title" to safeTitle,
-                "sourceName" to sourceName.trim().take(150),
+                "sourceName" to sourceName.trim().ifBlank { "Self Study" }.take(150),
                 "content" to content.trim().take(5000),
                 "updatedAt" to FieldValue.serverTimestamp(),
             )
             subjectName?.trim()?.takeIf { it.isNotEmpty() }?.take(80)?.let {
                 payload["subjectName"] = it
+            }
+            pdfTitle?.trim()?.takeIf { it.isNotEmpty() }?.take(150)?.let {
+                payload["pdfTitle"] = it
+            }
+            pdfLocalFileName?.trim()?.takeIf { it.isNotEmpty() }?.take(200)?.let {
+                payload["pdfLocalFileName"] = it
             }
             userDoc(uid).collection("revisionDiary").document(entryId).update(payload).await()
             Result.success(Unit)
@@ -1033,8 +1045,10 @@ class StudyRepository(
                     "dateKey" to d.dateKey.take(20),
                     "title" to d.title.take(150),
                     "subjectName" to d.subjectName?.take(80),
-                    "sourceName" to d.sourceName.take(150),
+                    "sourceName" to d.sourceName.ifBlank { "Self Study" }.take(150),
                     "content" to d.content.take(5000),
+                    "pdfTitle" to d.pdfTitle?.take(150),
+                    "pdfLocalFileName" to d.pdfLocalFileName?.take(200),
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 ).filterValues { it != null } as Map<String, Any>
@@ -1045,6 +1059,32 @@ class StudyRepository(
                 chunk.forEach { (ref, payload) -> batch.set(ref, payload, SetOptions.merge()) }
                 batch.commit().await()
             }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetchSupportWhatsAppDigits(): String? {
+        return try {
+            val snap = db.collection("appConfig").document("support").get().await()
+            snap.getString("whatsappDigits")?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    suspend fun updateSupportWhatsAppDigits(digits: String): Result<Unit> {
+        val path = "appConfig/support"
+        return try {
+            val payload = mapOf(
+                "whatsappDigits" to digits.take(20),
+                "updatedAt" to FieldValue.serverTimestamp(),
+            )
+            db.collection("appConfig").document("support").set(payload).await()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e

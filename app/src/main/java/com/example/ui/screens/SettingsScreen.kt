@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -73,6 +74,7 @@ import com.example.data.local.LocalAppSettings
 import com.example.data.local.LocalFileStorage
 import com.example.data.remote.DriveAuthOutcome
 import com.example.data.remote.GoogleDriveBackupManager
+import com.example.data.remote.GoogleDriveProfile
 import com.example.security.BiometricLockHelper
 import com.example.ui.components.LearnTalentLogo
 import com.example.ui.components.Tactile3DBadge
@@ -86,10 +88,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private enum class PendingDrivePurpose { BACKUP, RESTORE, SIGN_IN }
+
 @Composable
 fun SettingsScreen(
     localSettings: LocalAppSettings,
     isOfflineSession: Boolean,
+    signedInEmail: String?,
+    signedInName: String?,
+    isAdminUser: Boolean,
     isDriveBusy: Boolean,
     customLogoFile: File?,
     driveBackupManager: GoogleDriveBackupManager,
@@ -108,20 +115,20 @@ fun SettingsScreen(
     onShowMessage: (String) -> Unit,
     onSignedOut: () -> Unit,
     onSignedInFromOffline: () -> Unit,
+    onDriveSignInSuccess: (profile: GoogleDriveProfile, accessToken: String) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
     val context = LocalContext.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
-    val user = GoogleAuthHelper.safeCurrentUser(context)
     val isOnline = remember { LocalFileStorage.isOnline(context) }
     val biometricSupported = remember { BiometricLockHelper.canAuthenticate(context) }
 
     var adminPhoneInput by remember(localSettings.adminWhatsAppNumber) {
         mutableStateOf(localSettings.adminWhatsAppNumber)
     }
-    var pendingDriveActionIsRestore by remember { mutableStateOf(false) }
+    var pendingDrivePurpose by remember { mutableStateOf(PendingDrivePurpose.BACKUP) }
 
     val logoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -157,31 +164,54 @@ fun SettingsScreen(
         }
     }
 
+    fun completeDriveSignInFromSettings(token: String) {
+        scope.launch {
+            driveBackupManager.fetchGoogleUserProfile(token)
+                .onSuccess { profile -> onDriveSignInSuccess(profile, token) }
+                .onFailure {
+                    onDriveSignInSuccess(
+                        GoogleDriveProfile(
+                            id = "drive_${token.hashCode().toUInt()}",
+                            email = "",
+                            name = "Google User"
+                        ),
+                        token
+                    )
+                }
+        }
+    }
+
     val driveAuthResolutionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && activity != null) {
             val token = driveBackupManager.extractTokenFromIntent(activity, result.data)
             if (!token.isNullOrBlank()) {
-                if (pendingDriveActionIsRestore) onDriveRestoreWithToken(token)
-                else onDriveBackupWithToken(token)
+                when (pendingDrivePurpose) {
+                    PendingDrivePurpose.RESTORE -> onDriveRestoreWithToken(token)
+                    PendingDrivePurpose.BACKUP -> onDriveBackupWithToken(token)
+                    PendingDrivePurpose.SIGN_IN -> completeDriveSignInFromSettings(token)
+                }
             } else {
                 onShowMessage("Google Drive अनुमति नहीं मिल सकी।")
             }
         }
     }
 
-    fun launchDriveAction(isRestore: Boolean) {
+    fun launchDriveAction(purpose: PendingDrivePurpose) {
         if (activity == null) {
             onShowMessage("Activity unavailable for Google Drive login.")
             return
         }
-        pendingDriveActionIsRestore = isRestore
+        pendingDrivePurpose = purpose
         scope.launch {
-            when (val outcome = driveBackupManager.requestDriveAuthorization(activity)) {
+            when (val outcome = driveBackupManager.requestAccountAndDriveAuthorization(activity)) {
                 is DriveAuthOutcome.Authorized -> {
-                    if (isRestore) onDriveRestoreWithToken(outcome.accessToken)
-                    else onDriveBackupWithToken(outcome.accessToken)
+                    when (purpose) {
+                        PendingDrivePurpose.RESTORE -> onDriveRestoreWithToken(outcome.accessToken)
+                        PendingDrivePurpose.BACKUP -> onDriveBackupWithToken(outcome.accessToken)
+                        PendingDrivePurpose.SIGN_IN -> completeDriveSignInFromSettings(outcome.accessToken)
+                    }
                 }
                 is DriveAuthOutcome.NeedsResolution -> {
                     driveAuthResolutionLauncher.launch(
@@ -229,7 +259,7 @@ fun SettingsScreen(
                     }
                 }
 
-                // 1. Account / Google Sign-In Card (Always lets offline users sign in!)
+                // 1. Account / Google Sign-In & Logout Card
                 item {
                     Tactile3DCard(accentColor = theme.primary, modifier = Modifier.fillMaxWidth()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -237,28 +267,36 @@ fun SettingsScreen(
                             Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (user != null) (user.displayName ?: "Google User") else "Offline Local Mode (बिना लॉगिन)",
+                                    text = if (!isOfflineSession) (signedInName?.ifBlank { null } ?: "Google User") else "Offline Local Mode (बिना लॉगिन)",
                                     style = MaterialTheme.typography.titleMedium,
                                     color = theme.onSurface
                                 )
                                 Text(
-                                    text = user?.email ?: "सारा डेटा फोन में सुरक्षित है। क्लाउड सिंक के लिए Google लॉगिन करें।",
+                                    text = if (!isOfflineSession) {
+                                        signedInEmail?.ifBlank { null } ?: "Google Drive ऑटो-सिंक सक्रिय है"
+                                    } else {
+                                        "सारा डेटा फोन में सुरक्षित है। क्लाउड सिंक के लिए Google लॉगिन करें।"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = theme.onSurfaceVariant
                                 )
                             }
                         }
                         Spacer(Modifier.height(12.dp))
-                        if (user == null) {
+                        if (isOfflineSession) {
                             Button(
                                 onClick = {
-                                    GoogleAuthHelper.onGoogleSignInClicked(
-                                        context = context,
-                                        credentialManager = credentialManager,
-                                        onAuthSuccess = onSignedInFromOffline,
-                                        onAuthError = { msg -> onShowMessage(msg) },
-                                        scope = scope
-                                    )
+                                    if (GoogleAuthHelper.isFirebaseInitialized(context)) {
+                                        GoogleAuthHelper.onGoogleSignInClicked(
+                                            context = context,
+                                            credentialManager = credentialManager,
+                                            onAuthSuccess = onSignedInFromOffline,
+                                            onAuthError = { launchDriveAction(PendingDrivePurpose.SIGN_IN) },
+                                            scope = scope
+                                        )
+                                    } else {
+                                        launchDriveAction(PendingDrivePurpose.SIGN_IN)
+                                    }
                                 },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = theme.primary,
@@ -269,7 +307,19 @@ fun SettingsScreen(
                             ) {
                                 Icon(Icons.AutoMirrored.Rounded.Login, contentDescription = null)
                                 Spacer(Modifier.width(8.dp))
-                                Text("Sign in with Google & Sync Cloud")
+                                Text("Sign in with Google & Sync Drive")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    GoogleAuthHelper.signOut(credentialManager, scope, onSignedOut)
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth().testTag("sign_out_btn")
+                            ) {
+                                Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null, tint = theme.error)
+                                Spacer(Modifier.width(8.dp))
+                                Text("लॉगआउट / लॉगिन स्क्रीन पर जाएं", color = theme.error)
                             }
                         } else {
                             Button(
@@ -285,7 +335,7 @@ fun SettingsScreen(
                             ) {
                                 Icon(Icons.AutoMirrored.Rounded.Logout, contentDescription = null)
                                 Spacer(Modifier.width(8.dp))
-                                Text(stringResource(R.string.sign_out))
+                                Text("${stringResource(R.string.sign_out)} (लॉगआउट करें)")
                             }
                         }
                     }
@@ -331,7 +381,7 @@ fun SettingsScreen(
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             Button(
-                                onClick = { launchDriveAction(isRestore = false) },
+                                onClick = { launchDriveAction(PendingDrivePurpose.BACKUP) },
                                 enabled = !isDriveBusy,
                                 colors = ButtonDefaults.buttonColors(containerColor = theme.success, contentColor = theme.onPrimary),
                                 shape = RoundedCornerShape(12.dp),
@@ -346,7 +396,7 @@ fun SettingsScreen(
                                 }
                             }
                             OutlinedButton(
-                                onClick = { launchDriveAction(isRestore = true) },
+                                onClick = { launchDriveAction(PendingDrivePurpose.RESTORE) },
                                 enabled = !isDriveBusy,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.weight(1f).testTag("drive_restore_btn")
@@ -377,14 +427,14 @@ fun SettingsScreen(
                     }
                 }
 
-                // 3. Admin WhatsApp Number Configuration
+                // 3. Admin Support Request (Phone number hidden from non-admin users)
                 item {
                     Tactile3DCard(accentColor = theme.secondary, modifier = Modifier.fillMaxWidth()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TactileIconOrb(icon = Icons.AutoMirrored.Rounded.Send, tint = theme.secondary, size = 42.dp)
                             Spacer(Modifier.width(12.dp))
                             Column {
-                                Text("एडमिन WhatsApp नंबर (Test / MCQ Request)", style = MaterialTheme.typography.titleMedium, color = theme.onSurface)
+                                Text("एडमिन सपोर्ट (Test / MCQ Request)", style = MaterialTheme.typography.titleMedium, color = theme.onSurface)
                                 Text(
                                     "सब्जेक्ट, टॉपिक और सब-टॉपिक लिखकर सीधे एडमिन को टेस्ट/नोट्स के लिए मैसेज भेजें",
                                     style = MaterialTheme.typography.bodySmall,
@@ -393,32 +443,62 @@ fun SettingsScreen(
                             }
                         }
                         Spacer(Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = adminPhoneInput,
-                            onValueChange = { adminPhoneInput = it },
-                            label = { Text("Admin WhatsApp Number (+91...)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("settings_whatsapp_input")
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        if (isAdminUser) {
+                            OutlinedTextField(
+                                value = adminPhoneInput,
+                                onValueChange = { adminPhoneInput = it },
+                                label = { Text("Admin WhatsApp Number (+91...)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("settings_whatsapp_input")
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                Button(
+                                    onClick = { onSaveWhatsAppNumber(adminPhoneInput) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = theme.secondary, contentColor = theme.onSecondary),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Save Number")
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenWhatsAppRequest,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f).testTag("settings_whatsapp_request_btn")
+                                ) {
+                                    Text("Request Test", color = theme.onSurface)
+                                }
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.VerifiedUser,
+                                    contentDescription = null,
+                                    tint = theme.success,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "एडमिन मोबाइल नंबर गोपनीय एवं सुरक्षित है।",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = theme.success
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
                             Button(
-                                onClick = { onSaveWhatsAppNumber(adminPhoneInput) },
+                                onClick = onOpenWhatsAppRequest,
                                 colors = ButtonDefaults.buttonColors(containerColor = theme.secondary, contentColor = theme.onSecondary),
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.fillMaxWidth().testTag("settings_whatsapp_request_btn")
                             ) {
-                                Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Save Number")
-                            }
-                            OutlinedButton(
-                                onClick = onOpenWhatsAppRequest,
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Request Test", color = theme.onSurface)
+                                Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("एडमिन से टेस्ट / नोट्स मांगें (WhatsApp)")
                             }
                         }
                     }

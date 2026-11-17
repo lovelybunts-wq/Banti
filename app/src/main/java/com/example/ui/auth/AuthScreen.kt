@@ -1,5 +1,9 @@
 package com.example.ui.auth
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -57,25 +61,67 @@ import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import com.example.R
 import com.example.auth.GoogleAuthHelper
+import com.example.data.remote.DriveAuthOutcome
+import com.example.data.remote.GoogleDriveBackupManager
+import com.example.data.remote.GoogleDriveProfile
 import com.example.ui.components.LearnTalentLogo
 import com.example.ui.components.Tactile3DCard
 import com.example.ui.components.TactileIconOrb
 import com.example.ui.theme.LocalStudyTheme
+import kotlinx.coroutines.launch
 import java.io.File
 
 @Composable
 fun AuthScreen(
     customLogoFile: File?,
+    driveBackupManager: GoogleDriveBackupManager = remember { GoogleDriveBackupManager() },
     onAuthSuccess: () -> Unit,
+    onDriveSignInSuccess: (profile: GoogleDriveProfile, accessToken: String) -> Unit,
     onContinueOffline: () -> Unit,
 ) {
     val context = LocalContext.current
+    val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
     val theme = LocalStudyTheme.current
 
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    fun completeDriveSignIn(token: String) {
+        scope.launch {
+            driveBackupManager.fetchGoogleUserProfile(token)
+                .onSuccess { profile ->
+                    isLoading = false
+                    onDriveSignInSuccess(profile, token)
+                }
+                .onFailure {
+                    val fallbackProfile = GoogleDriveProfile(
+                        id = "drive_${token.hashCode().toUInt()}",
+                        email = "",
+                        name = "Google User"
+                    )
+                    isLoading = false
+                    onDriveSignInSuccess(fallbackProfile, token)
+                }
+        }
+    }
+
+    val driveResolutionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && activity != null) {
+            val token = driveBackupManager.extractTokenFromIntent(activity, result.data)
+            if (!token.isNullOrBlank()) {
+                completeDriveSignIn(token)
+            } else {
+                isLoading = false
+                errorMessage = "Google खाता अनुमति नहीं मिल सकी। कृपया पुनः प्रयास करें।"
+            }
+        } else {
+            isLoading = false
+        }
+    }
 
     LaunchedEffect(Unit) {
         GoogleAuthHelper.attemptAutoSignIn(
@@ -187,22 +233,59 @@ fun AuthScreen(
                 onClick = {
                     errorMessage = null
                     isLoading = true
-                    GoogleAuthHelper.onGoogleSignInClicked(
-                        context = context,
-                        credentialManager = credentialManager,
-                        onAuthSuccess = {
-                            isLoading = false
-                            onAuthSuccess()
-                        },
-                        onAuthError = { msg ->
-                            isLoading = false
-                            errorMessage = "$msg\n(आप नीचे ऑफलाइन बटन से तुरंत ऐप के अंदर जा सकते हैं)"
-                        },
-                        scope = scope,
-                        onAuthCancelled = {
-                            isLoading = false
+                    if (GoogleAuthHelper.isFirebaseInitialized(context)) {
+                        GoogleAuthHelper.onGoogleSignInClicked(
+                            context = context,
+                            credentialManager = credentialManager,
+                            onAuthSuccess = {
+                                isLoading = false
+                                onAuthSuccess()
+                            },
+                            onAuthError = { msg ->
+                                if (activity != null) {
+                                    scope.launch {
+                                        when (val outcome = driveBackupManager.requestAccountAndDriveAuthorization(activity)) {
+                                            is DriveAuthOutcome.Authorized -> completeDriveSignIn(outcome.accessToken)
+                                            is DriveAuthOutcome.NeedsResolution -> {
+                                                driveResolutionLauncher.launch(
+                                                    IntentSenderRequest.Builder(outcome.intentSender).build()
+                                                )
+                                            }
+                                            is DriveAuthOutcome.Error -> {
+                                                isLoading = false
+                                                errorMessage = "$msg\n(${outcome.message})"
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    isLoading = false
+                                    errorMessage = msg
+                                }
+                            },
+                            scope = scope,
+                            onAuthCancelled = {
+                                isLoading = false
+                            }
+                        )
+                    } else if (activity != null) {
+                        scope.launch {
+                            when (val outcome = driveBackupManager.requestAccountAndDriveAuthorization(activity)) {
+                                is DriveAuthOutcome.Authorized -> completeDriveSignIn(outcome.accessToken)
+                                is DriveAuthOutcome.NeedsResolution -> {
+                                    driveResolutionLauncher.launch(
+                                        IntentSenderRequest.Builder(outcome.intentSender).build()
+                                    )
+                                }
+                                is DriveAuthOutcome.Error -> {
+                                    isLoading = false
+                                    errorMessage = "${outcome.message}\n(आप नीचे ऑफलाइन बटन से भी ऐप उपयोग कर सकते हैं)"
+                                }
+                            }
                         }
-                    )
+                    } else {
+                        isLoading = false
+                        errorMessage = "Activity unavailable for Google Sign-In"
+                    }
                 },
                 enabled = !isLoading,
                 shape = RoundedCornerShape(16.dp),

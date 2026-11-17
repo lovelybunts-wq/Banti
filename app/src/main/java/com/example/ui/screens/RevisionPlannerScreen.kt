@@ -2,7 +2,9 @@ package com.example.ui.screens
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -20,18 +22,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Book
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EventAvailable
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -95,9 +102,20 @@ fun RevisionPlannerScreen(
     onAddStudyPlanItem: (dateKey: String, entryType: String, title: String, subjectName: String?, notes: String?) -> Unit,
     onToggleCompleted: (StudyLog) -> Unit,
     onDeleteLog: (String) -> Unit,
-    onAddDiaryEntry: (title: String, subjectName: String?, sourceName: String, content: String) -> Unit,
-    onUpdateDiaryEntry: (entryId: String, title: String, subjectName: String?, sourceName: String, content: String) -> Unit,
-    onDeleteDiaryEntry: (String) -> Unit,
+    onAddDiaryEntry: (title: String, subjectName: String?, sourceName: String, content: String, pdfUri: Uri?) -> Unit,
+    onUpdateDiaryEntry: (
+        entryId: String,
+        title: String,
+        subjectName: String?,
+        sourceName: String,
+        content: String,
+        pdfUri: Uri?,
+        existingPdfTitle: String?,
+        existingPdfFileName: String?,
+        removePdf: Boolean,
+    ) -> Unit,
+    onDeleteDiaryEntry: (RevisionDiaryEntry) -> Unit,
+    onOpenDiaryPdf: (localFileName: String, title: String) -> Unit,
     onSaveExamGoal: (examName: String, examDateMillis: Long, subjects: List<Subject>, autoPlan: Boolean) -> Unit,
     onSaveReminderPrefs: (enabled: Boolean, hour: Int, minute: Int, yesterdaySummary: String) -> Unit,
 ) {
@@ -281,12 +299,38 @@ fun RevisionPlannerScreen(
                                         color = theme.onSurfaceVariant
                                     )
                                 }
+                                if (!entry.pdfLocalFileName.isNullOrBlank()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            onOpenDiaryPdf(
+                                                entry.pdfLocalFileName,
+                                                entry.pdfTitle ?: entry.title
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.testTag("open_diary_pdf_${entry.id}")
+                                    ) {
+                                        Icon(
+                                            Icons.Rounded.PictureAsPdf,
+                                            contentDescription = "Open Revision PDF",
+                                            tint = theme.error,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            text = entry.pdfTitle ?: "Open Attached PDF",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = theme.onSurface
+                                        )
+                                    }
+                                }
                             }
                             Row {
                                 IconButton(onClick = { editingDiaryEntry = entry }) {
                                     Icon(Icons.Rounded.Edit, contentDescription = "Edit diary", tint = theme.onSurfaceVariant)
                                 }
-                                IconButton(onClick = { onDeleteDiaryEntry(entry.id) }) {
+                                IconButton(onClick = { onDeleteDiaryEntry(entry) }) {
                                     Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete diary", tint = theme.onSurfaceVariant)
                                 }
                             }
@@ -545,6 +589,30 @@ fun RevisionPlannerScreen(
         var subjectName by remember(editing) { mutableStateOf(editing?.subjectName ?: "") }
         var sourceName by remember(editing) { mutableStateOf(editing?.sourceName ?: "") }
         var content by remember(editing) { mutableStateOf(editing?.content ?: "") }
+        var pickedPdfUri by remember(editing) { mutableStateOf<Uri?>(null) }
+        var pickedPdfDisplayName by remember(editing) { mutableStateOf(editing?.pdfTitle) }
+        var removeExistingPdf by remember(editing) { mutableStateOf(false) }
+
+        val pdfPicker = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                pickedPdfUri = uri
+                removeExistingPdf = false
+                val displayName = runCatching {
+                    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) {
+                            val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (idx >= 0) c.getString(idx) else null
+                        } else null
+                    }
+                }.getOrNull() ?: "Revision.pdf"
+                pickedPdfDisplayName = displayName
+                if (title.isBlank()) {
+                    title = displayName.substringBeforeLast(".")
+                }
+            }
+        }
 
         AlertDialog(
             onDismissRequest = {
@@ -554,12 +622,15 @@ fun RevisionPlannerScreen(
             containerColor = theme.surfaceElevated,
             title = {
                 Text(
-                    if (editing != null) "रिवीजन डायरी अपडेट करें" else "रिवीजन डायरी में लिखें",
+                    if (editing != null) "रिवीजन डायरी अपडेट करें" else "रिवीजन डायरी में लिखें / PDF जोड़ें",
                     color = theme.onSurface
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     OutlinedTextField(
                         value = title,
                         onValueChange = { title = it },
@@ -584,11 +655,59 @@ fun RevisionPlannerScreen(
                     OutlinedTextField(
                         value = content,
                         onValueChange = { content = it },
-                        label = { Text("रिवीजन सामग्री (Notes / Key Points)") },
+                        label = { Text("रिवीजन सामग्री (Notes / Key Points - Optional if PDF)") },
                         minLines = 3,
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth().testTag("diary_content_input")
                     )
+                    OutlinedButton(
+                        onClick = { pdfPicker.launch(arrayOf("application/pdf", "*/*")) },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("pick_diary_pdf_btn")
+                    ) {
+                        Icon(
+                            Icons.Rounded.UploadFile,
+                            contentDescription = null,
+                            tint = theme.tertiary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (pickedPdfDisplayName.isNullOrBlank()) "Upload PDF (पीडीएफ जोड़ें)" else "Change PDF (PDF बदलें)",
+                            color = theme.onSurface
+                        )
+                    }
+                    if (!pickedPdfDisplayName.isNullOrBlank() && !removeExistingPdf) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(
+                                    Icons.Rounded.PictureAsPdf,
+                                    contentDescription = null,
+                                    tint = theme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = pickedPdfDisplayName ?: "PDF Attached",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = theme.onSurface
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    pickedPdfUri = null
+                                    pickedPdfDisplayName = null
+                                    removeExistingPdf = true
+                                }
+                            ) {
+                                Icon(Icons.Rounded.Close, contentDescription = "Remove PDF", tint = theme.onSurfaceVariant)
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -596,9 +715,25 @@ fun RevisionPlannerScreen(
                     onClick = {
                         if (title.isNotBlank()) {
                             if (editing != null) {
-                                onUpdateDiaryEntry(editing.id, title, subjectName.ifBlank { null }, sourceName, content)
+                                onUpdateDiaryEntry(
+                                    editing.id,
+                                    title,
+                                    subjectName.ifBlank { null },
+                                    sourceName,
+                                    content,
+                                    pickedPdfUri,
+                                    editing.pdfTitle,
+                                    editing.pdfLocalFileName,
+                                    removeExistingPdf
+                                )
                             } else {
-                                onAddDiaryEntry(title, subjectName.ifBlank { null }, sourceName, content)
+                                onAddDiaryEntry(
+                                    title,
+                                    subjectName.ifBlank { null },
+                                    sourceName,
+                                    content,
+                                    pickedPdfUri
+                                )
                             }
                             showAddDiaryDialog = false
                             editingDiaryEntry = null

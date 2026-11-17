@@ -143,6 +143,8 @@ data class OfflineRevisionDiaryDto(
     val subjectName: String? = null,
     val sourceName: String = "",
     val content: String = "",
+    val pdfTitle: String? = null,
+    val pdfLocalFileName: String? = null,
     val updatedAtSeconds: Long = 0L,
 )
 
@@ -161,7 +163,10 @@ data class OfflineVaultSnapshot(
     val hasUserEdits: Boolean = false,
 )
 
-class LocalOfflineStore(private val context: Context) {
+class LocalOfflineStore(
+    private val context: Context,
+    val ownerId: String = OFFLINE_UID,
+) {
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -169,7 +174,12 @@ class LocalOfflineStore(private val context: Context) {
         encodeDefaults = true
     }
     private val mutex = Mutex()
-    private val storeFile = File(context.filesDir, "learn_talent_offline_vault.json")
+    private val storeFile = if (ownerId == OFFLINE_UID) {
+        File(context.filesDir, "learn_talent_offline_vault.json")
+    } else {
+        val safeOwner = ownerId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        File(context.filesDir, "learn_talent_vault_$safeOwner.json")
+    }
 
     private var snapshot: OfflineVaultSnapshot = loadOrSeedSnapshot()
 
@@ -311,6 +321,8 @@ class LocalOfflineStore(private val context: Context) {
                     subjectName = it.subjectName,
                     sourceName = it.sourceName,
                     content = it.content,
+                    pdfTitle = it.pdfTitle,
+                    pdfLocalFileName = it.pdfLocalFileName,
                     updatedAtSeconds = it.updatedAt?.seconds ?: 0L,
                 )
             },
@@ -668,14 +680,19 @@ class LocalOfflineStore(private val context: Context) {
         subjectName: String?,
         sourceName: String,
         content: String,
+        pdfTitle: String? = null,
+        pdfLocalFileName: String? = null,
+        entryId: String = "diary_${StudyRepository.newValidId()}",
     ) {
         val dto = OfflineRevisionDiaryDto(
-            id = "diary_${StudyRepository.newValidId()}",
+            id = entryId,
             dateKey = dateKey.take(20),
             title = title.trim().take(150),
             subjectName = subjectName?.trim()?.takeIf { it.isNotEmpty() }?.take(80),
             sourceName = sourceName.trim().take(150),
             content = content.trim().take(5000),
+            pdfTitle = pdfTitle?.trim()?.takeIf { it.isNotEmpty() }?.take(150),
+            pdfLocalFileName = pdfLocalFileName?.trim()?.takeIf { it.isNotEmpty() }?.take(200),
             updatedAtSeconds = nowSeconds(),
         )
         update { it.copy(revisionDiary = it.revisionDiary + dto, hasUserEdits = true) }
@@ -687,6 +704,8 @@ class LocalOfflineStore(private val context: Context) {
         subjectName: String?,
         sourceName: String,
         content: String,
+        pdfTitle: String? = null,
+        pdfLocalFileName: String? = null,
     ) {
         update { snap ->
             snap.copy(
@@ -697,6 +716,8 @@ class LocalOfflineStore(private val context: Context) {
                             subjectName = subjectName?.trim()?.takeIf { it.isNotEmpty() }?.take(80),
                             sourceName = sourceName.trim().take(150),
                             content = content.trim().take(5000),
+                            pdfTitle = pdfTitle?.trim()?.takeIf { it.isNotEmpty() }?.take(150),
+                            pdfLocalFileName = pdfLocalFileName?.trim()?.takeIf { it.isNotEmpty() }?.take(200),
                             updatedAtSeconds = nowSeconds()
                         )
                     } else e
@@ -708,6 +729,12 @@ class LocalOfflineStore(private val context: Context) {
 
     suspend fun deleteRevisionDiaryEntry(entryId: String) {
         update { it.copy(revisionDiary = it.revisionDiary.filterNot { e -> e.id == entryId }, hasUserEdits = true) }
+    }
+
+    suspend fun adoptOfflineSnapshotIfEmpty(offlineSnap: OfflineVaultSnapshot) {
+        if (!snapshot.hasUserEdits && offlineSnap.hasUserEdits) {
+            update { offlineSnap.copy(hasUserEdits = true) }
+        }
     }
 
     private suspend fun update(transform: (OfflineVaultSnapshot) -> OfflineVaultSnapshot): OfflineVaultSnapshot {
@@ -970,12 +997,14 @@ class LocalOfflineStore(private val context: Context) {
 
     private fun OfflineRevisionDiaryDto.toModel() = RevisionDiaryEntry(
         id = id,
-        userId = OFFLINE_UID,
+        userId = ownerId,
         dateKey = dateKey,
         title = title,
         subjectName = subjectName,
         sourceName = sourceName,
         content = content,
+        pdfTitle = pdfTitle,
+        pdfLocalFileName = pdfLocalFileName,
         updatedAt = if (updatedAtSeconds > 0) Timestamp(updatedAtSeconds, 0) else null,
     )
 

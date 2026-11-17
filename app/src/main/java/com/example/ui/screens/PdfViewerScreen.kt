@@ -66,6 +66,7 @@ import java.io.File
 fun PdfViewerScreen(
     note: StudyNote?,
     pdfFile: File?,
+    directTitle: String? = null,
     onBack: () -> Unit,
 ) {
     val theme = LocalStudyTheme.current
@@ -116,7 +117,7 @@ fun PdfViewerScreen(
                 title = {
                     Column {
                         Text(
-                            text = note?.title ?: "PDF Note",
+                            text = note?.title ?: directTitle ?: "PDF Note",
                             style = MaterialTheme.typography.titleMedium,
                             color = theme.primary,
                             maxLines = 1,

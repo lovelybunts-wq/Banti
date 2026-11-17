@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -23,6 +24,8 @@ import com.example.data.model.VideoLink
 import com.example.data.remote.GoogleDriveBackupManager
 import com.example.data.remote.StudyRepository
 import com.google.firebase.firestore.FirebaseFirestoreException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,17 +42,25 @@ import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
 class MainViewModel(
+    private val appContext: Context,
     private val repository: StudyRepository?,
     private val offlineStore: LocalOfflineStore,
     private val fileStorage: LocalFileStorage,
     private val prefs: UserPreferencesManager,
     private val driveBackupManager: GoogleDriveBackupManager,
     val firebaseUid: String?,
+    val driveUserId: String? = null,
     val initialDisplayName: String,
 ) : ViewModel() {
 
-    val storageOwnerId: String = firebaseUid ?: LocalOfflineStore.OFFLINE_UID
-    val isOfflineSession: Boolean = firebaseUid == null
+    val storageOwnerId: String = firebaseUid
+        ?: driveUserId?.takeIf { it.isNotBlank() }
+        ?: LocalOfflineStore.OFFLINE_UID
+    val isOfflineSession: Boolean = firebaseUid == null && driveUserId.isNullOrBlank()
+
+    private var autoSyncJob: Job? = null
+    @Volatile
+    private var lastKnownDriveToken: String? = null
 
     private val _toastEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val toastEvents = _toastEvents.asSharedFlow()
@@ -143,6 +154,9 @@ class MainViewModel(
         if (uid != null && repo != null) {
             viewModelScope.launch {
                 repo.ensureUserProfile(uid, initialDisplayName)
+                repo.fetchSupportWhatsAppDigits()?.let { digits ->
+                    prefs.setAdminWhatsAppNumber(digits)
+                }
                 fileStorage.copyOfflineFilesToUser(uid)
                 val offlineSnap = offlineStore.currentSnapshot()
                 if (offlineSnap.hasUserEdits) {
@@ -158,6 +172,25 @@ class MainViewModel(
                         repo.seedDefaultSubjectsIfEmpty(uid)
                             .onSuccess { prefs.markSeeded(uid) }
                     }
+                }
+                val silentToken = driveBackupManager.silentGetDriveToken(appContext)
+                if (!silentToken.isNullOrBlank()) {
+                    lastKnownDriveToken = silentToken
+                }
+            }
+        } else if (!driveUserId.isNullOrBlank()) {
+            viewModelScope.launch {
+                val rawOfflineStore = LocalOfflineStore(appContext)
+                val rawSnap = rawOfflineStore.currentSnapshot()
+                if (rawSnap.hasUserEdits) {
+                    fileStorage.copyOfflineFilesToUser(storageOwnerId)
+                    offlineStore.adoptOfflineSnapshotIfEmpty(rawSnap)
+                    rawOfflineStore.markSyncedToCloud()
+                }
+                val silentToken = driveBackupManager.silentGetDriveToken(appContext)
+                if (!silentToken.isNullOrBlank()) {
+                    lastKnownDriveToken = silentToken
+                    syncOrRestoreWithTokenInternal(silentToken, showMessages = false)
                 }
             }
         }
@@ -197,6 +230,7 @@ class MainViewModel(
             } else {
                 offlineStore.updateTheme(themeId)
             }
+            scheduleAutoDriveSync()
         }
     }
 
@@ -212,13 +246,23 @@ class MainViewModel(
     fun setCloudSyncEnabled(enabled: Boolean) {
         viewModelScope.launch {
             prefs.setCloudSyncEnabled(enabled)
+            if (enabled) scheduleAutoDriveSync()
         }
     }
 
     fun saveAdminWhatsAppNumber(number: String) {
         viewModelScope.launch {
-            prefs.setAdminWhatsAppNumber(number)
-            _toastEvents.tryEmit("Admin WhatsApp number saved!")
+            val normalized = UserPreferencesManager.normalizePhoneDigits(number)
+            if (normalized.isBlank()) {
+                _toastEvents.tryEmit("कृपया सही मोबाइल नंबर लिखें")
+                return@launch
+            }
+            prefs.setAdminWhatsAppNumber(normalized)
+            val uid = firebaseUid
+            if (uid != null && repository != null) {
+                repository.updateSupportWhatsAppDigits(normalized)
+            }
+            _toastEvents.tryEmit("Admin WhatsApp support number updated!")
         }
     }
 
@@ -276,6 +320,7 @@ class MainViewModel(
                     _toastEvents.tryEmit("Exam goal updated!")
                 }
             }
+            scheduleAutoDriveSync()
         }
     }
 
@@ -284,11 +329,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.addSubject(uid, nameEn, nameHi, iconKey, colorHex, sortOrder)
-                    .onSuccess { _toastEvents.tryEmit("Subject added") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("Subject added")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Could not add subject") }
             } else {
                 offlineStore.addSubject(nameEn, nameHi, iconKey, colorHex, sortOrder)
                 _toastEvents.tryEmit("Subject added")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -298,11 +347,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.addTopic(uid, subjectId, name, description)
-                    .onSuccess { _toastEvents.tryEmit("Topic added") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("Topic added")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Could not add topic") }
             } else {
                 offlineStore.addTopic(subjectId, name, description)
                 _toastEvents.tryEmit("Topic added")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -312,9 +365,11 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.deleteTopic(uid, topicId)
+                    .onSuccess { scheduleAutoDriveSync() }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Could not delete topic") }
             } else {
                 offlineStore.deleteTopic(topicId)
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -324,11 +379,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.addSubtopic(uid, subjectId, topicId, name)
-                    .onSuccess { _toastEvents.tryEmit("Sub-topic added") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("Sub-topic added")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Could not add sub-topic") }
             } else {
                 offlineStore.addSubtopic(subjectId, topicId, name)
                 _toastEvents.tryEmit("Sub-topic added")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -338,9 +397,11 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.deleteSubtopic(uid, subtopicId)
+                    .onSuccess { scheduleAutoDriveSync() }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Could not delete sub-topic") }
             } else {
                 offlineStore.deleteSubtopic(subtopicId)
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -350,11 +411,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.markSubtopicStudiedToday(uid, subtopic, subjectName)
-                    .onSuccess { _toastEvents.tryEmit("आज के अध्ययन में जोड़ा गया!") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("आज के अध्ययन में जोड़ा गया!")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Update failed") }
             } else {
                 offlineStore.markSubtopicStudiedToday(subtopic, subjectName)
                 _toastEvents.tryEmit("आज के अध्ययन में जोड़ा गया!")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -375,6 +440,7 @@ class MainViewModel(
                     noteType = NoteType.FOLDER,
                 ).onSuccess {
                     _toastEvents.tryEmit("Folder '$folderName' created")
+                    scheduleAutoDriveSync()
                 }.onFailure {
                     _toastEvents.tryEmit(it.message ?: "Failed to create folder")
                 }
@@ -389,6 +455,7 @@ class MainViewModel(
                     noteType = NoteType.FOLDER,
                 )
                 _toastEvents.tryEmit("Folder '$folderName' created")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -431,6 +498,7 @@ class MainViewModel(
                         htmlContent = htmlText,
                     ).onSuccess {
                         _toastEvents.tryEmit("Saved '$finalTitle'")
+                        scheduleAutoDriveSync()
                     }.onFailure {
                         _toastEvents.tryEmit(it.message ?: "Cloud save failed")
                     }
@@ -446,7 +514,11 @@ class MainViewModel(
                         localFileName = fileName,
                         htmlContent = htmlText,
                     )
-                    _toastEvents.tryEmit("Saved '$finalTitle' offline")
+                    _toastEvents.tryEmit(
+                        if (!isOfflineSession) "Saved '$finalTitle' & syncing to Google Drive"
+                        else "Saved '$finalTitle' offline"
+                    )
+                    scheduleAutoDriveSync()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -482,6 +554,7 @@ class MainViewModel(
                     htmlContent = html,
                 ).onSuccess {
                     _toastEvents.tryEmit("Sample HTML Test created!")
+                    scheduleAutoDriveSync()
                 }.onFailure {
                     _toastEvents.tryEmit(it.message ?: "Failed to save test")
                 }
@@ -498,6 +571,7 @@ class MainViewModel(
                     htmlContent = html,
                 )
                 _toastEvents.tryEmit("Sample HTML Test created!")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -507,11 +581,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.renameOrMoveNote(uid, noteId, newTitle, newFolderName)
-                    .onSuccess { _toastEvents.tryEmit("Updated note") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("Updated note")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Update failed") }
             } else {
                 offlineStore.renameOrMoveNote(noteId, newTitle, newFolderName)
                 _toastEvents.tryEmit("Updated note")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -543,11 +621,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.deleteNote(uid, note.id)
-                    .onSuccess { _toastEvents.tryEmit("Deleted '${note.title}'") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("Deleted '${note.title}'")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Delete failed") }
             } else {
                 offlineStore.deleteNote(note.id)
                 _toastEvents.tryEmit("Deleted '${note.title}'")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -570,11 +652,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.addVideo(uid, subjectId, topicId, subtopicId, title, url, channelOrNote)
-                    .onSuccess { _toastEvents.tryEmit("YouTube link saved!") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("YouTube link saved!")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Failed to save link") }
             } else {
                 offlineStore.addVideo(subjectId, topicId, subtopicId, title, url, channelOrNote)
                 _toastEvents.tryEmit("YouTube link saved!")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -605,9 +691,11 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.deleteVideo(uid, videoId)
+                    .onSuccess { scheduleAutoDriveSync() }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Delete failed") }
             } else {
                 offlineStore.deleteVideo(videoId)
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -625,11 +713,15 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.addMcq(uid, subjectId, topicId, subtopicId, question, options, correctIndex, explanation)
-                    .onSuccess { _toastEvents.tryEmit("Practice MCQ added!") }
+                    .onSuccess {
+                        _toastEvents.tryEmit("Practice MCQ added!")
+                        scheduleAutoDriveSync()
+                    }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Could not add MCQ") }
             } else {
                 offlineStore.addMcq(subjectId, topicId, subtopicId, question, options, correctIndex, explanation)
                 _toastEvents.tryEmit("Practice MCQ added!")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -639,9 +731,11 @@ class MainViewModel(
             val uid = firebaseUid
             if (uid != null && repository != null) {
                 repository.deleteMcq(uid, mcqId)
+                    .onSuccess { scheduleAutoDriveSync() }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Delete failed") }
             } else {
                 offlineStore.deleteMcq(mcqId)
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -697,6 +791,7 @@ class MainViewModel(
                         notes = summaryText
                     )
                     _toastEvents.tryEmit("Score saved: ${formatNum(scoreObtained)} / ${formatNum(totalMarks)}")
+                    scheduleAutoDriveSync()
                 }.onFailure {
                     _toastEvents.tryEmit(it.message ?: "Failed to save score")
                 }
@@ -714,6 +809,7 @@ class MainViewModel(
                 )
                 _lastReturnedScore.value = res
                 _toastEvents.tryEmit("Score saved: ${formatNum(scoreObtained)} / ${formatNum(totalMarks)}")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -738,12 +834,14 @@ class MainViewModel(
                     notes = notes,
                 ).onSuccess {
                     _toastEvents.tryEmit("Study item saved!")
+                    scheduleAutoDriveSync()
                 }.onFailure {
                     _toastEvents.tryEmit(it.message ?: "Failed to save study item")
                 }
             } else {
                 offlineStore.addStudyLog(dateKey, entryType, title, subjectName, notes)
                 _toastEvents.tryEmit("Study item saved!")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -756,6 +854,7 @@ class MainViewModel(
             } else {
                 offlineStore.toggleStudyLogCompleted(log.id, !log.completed)
             }
+            scheduleAutoDriveSync()
         }
     }
 
@@ -767,6 +866,7 @@ class MainViewModel(
             } else {
                 offlineStore.deleteStudyLog(logId)
             }
+            scheduleAutoDriveSync()
         }
     }
 
@@ -775,17 +875,58 @@ class MainViewModel(
         subjectName: String?,
         sourceName: String,
         content: String,
+        pdfUri: Uri? = null,
     ) {
         viewModelScope.launch {
             val today = StudyRepository.todayKey()
+            val docId = "diary_${StudyRepository.newValidId()}"
+            var pdfTitle: String? = null
+            var pdfLocalFileName: String? = null
+
+            if (pdfUri != null) {
+                try {
+                    val (fileName, _) = fileStorage.copyUriToLocal(storageOwnerId, docId, pdfUri, "pdf")
+                    pdfTitle = fileStorage.queryDisplayName(pdfUri) ?: fileName
+                    pdfLocalFileName = fileName
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _toastEvents.tryEmit(e.message ?: "Could not attach PDF")
+                    return@launch
+                }
+            }
+
             val uid = firebaseUid
             if (uid != null && repository != null) {
-                repository.addRevisionDiaryEntry(uid, today, title, subjectName, sourceName, content)
-                    .onSuccess { _toastEvents.tryEmit("रिवीजन डायरी में सेव हो गया!") }
-                    .onFailure { _toastEvents.tryEmit(it.message ?: "Could not save diary") }
+                repository.addRevisionDiaryEntry(
+                    uid = uid,
+                    dateKey = today,
+                    title = title,
+                    subjectName = subjectName,
+                    sourceName = sourceName,
+                    content = content,
+                    pdfTitle = pdfTitle,
+                    pdfLocalFileName = pdfLocalFileName,
+                    docId = docId,
+                ).onSuccess {
+                    _toastEvents.tryEmit("रिवीजन डायरी में सेव हो गया!")
+                    scheduleAutoDriveSync()
+                }.onFailure {
+                    _toastEvents.tryEmit(it.message ?: "Could not save diary")
+                }
             } else {
-                offlineStore.addRevisionDiaryEntry(today, title, subjectName, sourceName, content)
+                offlineStore.addRevisionDiaryEntry(
+                    dateKey = today,
+                    title = title,
+                    subjectName = subjectName,
+                    sourceName = sourceName,
+                    content = content,
+                    pdfTitle = pdfTitle,
+                    pdfLocalFileName = pdfLocalFileName,
+                    entryId = docId,
+                )
                 _toastEvents.tryEmit("रिवीजन डायरी में सेव हो गया!")
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -796,28 +937,79 @@ class MainViewModel(
         subjectName: String?,
         sourceName: String,
         content: String,
+        pdfUri: Uri? = null,
+        existingPdfTitle: String? = null,
+        existingPdfFileName: String? = null,
+        removePdf: Boolean = false,
     ) {
         viewModelScope.launch {
+            var finalPdfTitle = if (removePdf) null else existingPdfTitle
+            var finalPdfFileName = if (removePdf) null else existingPdfFileName
+
+            if (removePdf && !existingPdfFileName.isNullOrBlank()) {
+                fileStorage.deleteLocalFile(storageOwnerId, existingPdfFileName)
+            }
+
+            if (pdfUri != null) {
+                try {
+                    val (fileName, _) = fileStorage.copyUriToLocal(storageOwnerId, entryId, pdfUri, "pdf")
+                    if (!existingPdfFileName.isNullOrBlank() && existingPdfFileName != fileName) {
+                        fileStorage.deleteLocalFile(storageOwnerId, existingPdfFileName)
+                    }
+                    finalPdfTitle = fileStorage.queryDisplayName(pdfUri) ?: fileName
+                    finalPdfFileName = fileName
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _toastEvents.tryEmit(e.message ?: "Could not attach PDF")
+                    return@launch
+                }
+            }
+
             val uid = firebaseUid
             if (uid != null && repository != null) {
-                repository.updateRevisionDiaryEntry(uid, entryId, title, subjectName, sourceName, content)
-                    .onSuccess { _toastEvents.tryEmit("रिवीजन डायरी अपडेट हो गई!") }
-                    .onFailure { _toastEvents.tryEmit(it.message ?: "Update failed") }
+                repository.updateRevisionDiaryEntry(
+                    uid = uid,
+                    entryId = entryId,
+                    title = title,
+                    subjectName = subjectName,
+                    sourceName = sourceName,
+                    content = content,
+                    pdfTitle = finalPdfTitle,
+                    pdfLocalFileName = finalPdfFileName,
+                ).onSuccess {
+                    _toastEvents.tryEmit("रिवीजन डायरी अपडेट हो गई!")
+                    scheduleAutoDriveSync()
+                }.onFailure {
+                    _toastEvents.tryEmit(it.message ?: "Update failed")
+                }
             } else {
-                offlineStore.updateRevisionDiaryEntry(entryId, title, subjectName, sourceName, content)
+                offlineStore.updateRevisionDiaryEntry(
+                    entryId = entryId,
+                    title = title,
+                    subjectName = subjectName,
+                    sourceName = sourceName,
+                    content = content,
+                    pdfTitle = finalPdfTitle,
+                    pdfLocalFileName = finalPdfFileName,
+                )
                 _toastEvents.tryEmit("रिवीजन डायरी अपडेट हो गई!")
+                scheduleAutoDriveSync()
             }
         }
     }
 
-    fun deleteRevisionDiaryEntry(entryId: String) {
+    fun deleteRevisionDiaryEntry(entry: RevisionDiaryEntry) {
         viewModelScope.launch {
+            fileStorage.deleteLocalFile(storageOwnerId, entry.pdfLocalFileName)
             val uid = firebaseUid
             if (uid != null && repository != null) {
-                repository.deleteRevisionDiaryEntry(uid, entryId)
+                repository.deleteRevisionDiaryEntry(uid, entry.id)
+                    .onSuccess { scheduleAutoDriveSync() }
                     .onFailure { _toastEvents.tryEmit(it.message ?: "Delete failed") }
             } else {
-                offlineStore.deleteRevisionDiaryEntry(entryId)
+                offlineStore.deleteRevisionDiaryEntry(entry.id)
+                scheduleAutoDriveSync()
             }
         }
     }
@@ -839,24 +1031,96 @@ class MainViewModel(
 
     fun restoreFromBackupJson(rawJson: String, attachedFiles: Map<String, ByteArray> = emptyMap()) {
         viewModelScope.launch {
-            try {
-                attachedFiles.forEach { (name, bytes) ->
-                    fileStorage.writeLocalBytes(storageOwnerId, name, bytes)
-                }
-                val snap = offlineStore.importSnapshotJson(rawJson)
-                val uid = firebaseUid
-                if (uid != null && repository != null) {
-                    repository.syncOfflineSnapshotToCloud(uid, snap)
-                        .onSuccess { offlineStore.markSyncedToCloud() }
-                }
-                _toastEvents.tryEmit("बैकअप सफलतापूर्वक रिस्टोर हो गया!")
-            } catch (e: Exception) {
-                _toastEvents.tryEmit(e.message ?: "Restore failed")
+            restoreFromBackupJsonSuspend(rawJson, attachedFiles, showToast = true)
+        }
+    }
+
+    private suspend fun restoreFromBackupJsonSuspend(
+        rawJson: String,
+        attachedFiles: Map<String, ByteArray>,
+        showToast: Boolean,
+    ) {
+        try {
+            attachedFiles.forEach { (name, bytes) ->
+                fileStorage.writeLocalBytes(storageOwnerId, name, bytes)
             }
+            val snap = offlineStore.importSnapshotJson(rawJson)
+            val uid = firebaseUid
+            if (uid != null && repository != null) {
+                repository.syncOfflineSnapshotToCloud(uid, snap)
+                    .onSuccess { offlineStore.markSyncedToCloud() }
+            }
+            if (showToast) {
+                _toastEvents.tryEmit("बैकअप सफलतापूर्वक रिस्टोर हो गया!")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _toastEvents.tryEmit(e.message ?: "Restore failed")
+        }
+    }
+
+    fun triggerDriveSyncAfterLogin(accessToken: String) {
+        lastKnownDriveToken = accessToken
+        viewModelScope.launch {
+            syncOrRestoreWithTokenInternal(accessToken, showMessages = true)
+        }
+    }
+
+    private suspend fun syncOrRestoreWithTokenInternal(accessToken: String, showMessages: Boolean) {
+        if (!localSettings.value.cloudSyncEnabled) return
+        _isDriveBusy.value = true
+        try {
+            val hasCloudBackup = driveBackupManager.hasBackupInLearnTalentFolder(accessToken)
+            val hasLocalEdits = offlineStore.currentSnapshot().hasUserEdits
+            val localFiles = fileStorage.listAllUserFiles(storageOwnerId)
+            if (hasCloudBackup && (!hasLocalEdits || localFiles.isEmpty())) {
+                driveBackupManager.restoreFromLearnTalentFolder(accessToken)
+                    .onSuccess { restored ->
+                        restoreFromBackupJsonSuspend(
+                            restored.snapshotJson,
+                            restored.restoredBinaryFiles,
+                            showToast = showMessages
+                        )
+                        if (showMessages) {
+                            _toastEvents.tryEmit("Google Drive से आपका सारा डेटा और फाइलें रिस्टोर हो गईं!")
+                        }
+                    }
+            } else if (hasLocalEdits || localFiles.isNotEmpty()) {
+                val json = buildBackupJson()
+                driveBackupManager.backupToLearnTalentFolder(accessToken, json, localFiles)
+                    .onSuccess {
+                        prefs.setLastDriveBackupMillis(System.currentTimeMillis())
+                        if (showMessages) {
+                            _toastEvents.tryEmit("Google Drive 'Learn Talent' फोल्डर से सिंक हो गया!")
+                        }
+                    }
+            }
+        } finally {
+            _isDriveBusy.value = false
+        }
+    }
+
+    private fun scheduleAutoDriveSync() {
+        if (isOfflineSession || !localSettings.value.cloudSyncEnabled) return
+        autoSyncJob?.cancel()
+        autoSyncJob = viewModelScope.launch {
+            delay(1500L)
+            if (!localSettings.value.cloudSyncEnabled) return@launch
+            val token = lastKnownDriveToken ?: driveBackupManager.silentGetDriveToken(appContext)
+            if (token.isNullOrBlank()) return@launch
+            lastKnownDriveToken = token
+            val json = buildBackupJson()
+            val files = fileStorage.listAllUserFiles(storageOwnerId)
+            driveBackupManager.backupToLearnTalentFolder(token, json, files)
+                .onSuccess {
+                    prefs.setLastDriveBackupMillis(System.currentTimeMillis())
+                }
         }
     }
 
     fun runDriveBackupWithToken(accessToken: String) {
+        lastKnownDriveToken = accessToken
         viewModelScope.launch {
             _isDriveBusy.value = true
             try {
@@ -877,12 +1141,13 @@ class MainViewModel(
     }
 
     fun runDriveRestoreWithToken(accessToken: String) {
+        lastKnownDriveToken = accessToken
         viewModelScope.launch {
             _isDriveBusy.value = true
             try {
                 driveBackupManager.restoreFromLearnTalentFolder(accessToken)
                     .onSuccess { restored ->
-                        restoreFromBackupJson(restored.snapshotJson, restored.restoredBinaryFiles)
+                        restoreFromBackupJsonSuspend(restored.snapshotJson, restored.restoredBinaryFiles, showToast = true)
                     }
                     .onFailure { e ->
                         _toastEvents.tryEmit(e.message ?: "Google Drive restore failed")

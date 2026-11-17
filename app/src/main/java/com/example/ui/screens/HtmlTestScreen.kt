@@ -6,13 +6,13 @@ import android.webkit.JsResult
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
@@ -74,13 +74,24 @@ fun HtmlTestScreen(
     var htmlContent by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var showManualDialog by remember { mutableStateOf(false) }
-    var hasAutoSubmitted by remember { mutableStateOf(false) }
+    var detectedScore by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var detectedSummary by remember { mutableStateOf<String?>(null) }
     var jsAlertMessage by remember { mutableStateOf<String?>(null) }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     LaunchedEffect(note?.id) {
         isLoading = true
         htmlContent = if (note != null) loadHtml(note) else null
         isLoading = false
+    }
+
+    BackHandler {
+        val wv = webViewRef
+        if (wv != null && wv.canGoBack()) {
+            wv.goBack()
+        } else {
+            onBack()
+        }
     }
 
     Scaffold(
@@ -92,18 +103,36 @@ fun HtmlTestScreen(
                     titleContentColor = theme.onBackground
                 ),
                 navigationIcon = {
-                    IconButton(onClick = onBack, modifier = Modifier.testTag("html_viewer_back_btn")) {
+                    IconButton(
+                        onClick = {
+                            val wv = webViewRef
+                            if (wv != null && wv.canGoBack()) wv.goBack() else onBack()
+                        },
+                        modifier = Modifier.testTag("html_viewer_back_btn")
+                    ) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
                     }
                 },
                 title = {
-                    Text(
-                        text = note?.title ?: "HTML Viewer",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = theme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column {
+                        Text(
+                            text = note?.title ?: "HTML Viewer",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = theme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val det = detectedScore
+                        if (det != null) {
+                            Text(
+                                text = "Detected: ${formatScore(det.first)} / ${formatScore(det.second)} • ऊपर बटन से सेव करें",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.success,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 },
                 actions = {
                     if (isTestMode) {
@@ -152,6 +181,7 @@ fun HtmlTestScreen(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
                             WebView(ctx).apply {
+                                webViewRef = this
                                 settings.javaScriptEnabled = isTestMode
                                 settings.domStorageEnabled = true
                                 settings.useWideViewPort = true
@@ -164,10 +194,10 @@ fun HtmlTestScreen(
                                     addJavascriptInterface(
                                         HtmlScoreBridge { obtained, total, summary ->
                                             post {
-                                                if (!hasAutoSubmitted) {
-                                                    hasAutoSubmitted = true
-                                                    onScoreSubmitted(obtained, total, summary)
-                                                }
+                                                // Record score passively WITHOUT closing the HTML test
+                                                // so the user can review all correct/wrong answers!
+                                                detectedScore = obtained to total
+                                                detectedSummary = summary.ifBlank { "Score: ${formatScore(obtained)} / ${formatScore(total)}" }
                                             }
                                         },
                                         "LearnTalentBridge"
@@ -182,13 +212,11 @@ fun HtmlTestScreen(
                                     ): Boolean {
                                         if (!message.isNullOrBlank()) {
                                             jsAlertMessage = message
-                                            if (isTestMode && !hasAutoSubmitted) {
+                                            if (isTestMode) {
                                                 val parsed = tryParseScore(message)
                                                 if (parsed != null) {
-                                                    hasAutoSubmitted = true
-                                                    result?.confirm()
-                                                    onScoreSubmitted(parsed.first, parsed.second, message)
-                                                    return true
+                                                    detectedScore = parsed
+                                                    detectedSummary = message
                                                 }
                                             }
                                         }
@@ -232,8 +260,12 @@ fun HtmlTestScreen(
     }
 
     if (showManualDialog) {
-        var obtainedText by remember { mutableStateOf("") }
-        var totalText by remember { mutableStateOf("") }
+        var obtainedText by remember(showManualDialog) {
+            mutableStateOf(detectedScore?.first?.let { formatScore(it) } ?: "")
+        }
+        var totalText by remember(showManualDialog) {
+            mutableStateOf(detectedScore?.second?.let { formatScore(it) } ?: "")
+        }
         AlertDialog(
             onDismissRequest = { showManualDialog = false },
             containerColor = theme.surfaceElevated,
@@ -272,8 +304,8 @@ fun HtmlTestScreen(
                     onClick = {
                         if (obtained != null && total != null && total > 0) {
                             showManualDialog = false
-                            hasAutoSubmitted = true
-                            onScoreSubmitted(obtained, total, "Score: $obtained / $total")
+                            val summary = detectedSummary ?: "Score: ${formatScore(obtained)} / ${formatScore(total)}"
+                            onScoreSubmitted(obtained, total, summary)
                         }
                     },
                     enabled = obtained != null && total != null && total > 0,
@@ -287,13 +319,16 @@ fun HtmlTestScreen(
     }
 }
 
+private fun formatScore(value: Double): String =
+    if (value % 1.0 == 0.0) value.toLong().toString() else String.format(java.util.Locale.US, "%.1f", value)
+
 private fun tryParseScore(text: String): Pair<Double, Double>? {
-    val slash = Regex("""(\d+(?:\.\d+)?)\s*(?:/|out of)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
+    val explicit = Regex("""(?:score|marks|result|obtained|प्राप्तांक|अंक)\s*[:=\-]?\s*(\d+(?:\.\d+)?)\s*(?:/|out of)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
         .find(text)
-    if (slash != null) {
-        val got = slash.groupValues[1].toDoubleOrNull()
-        val tot = slash.groupValues[2].toDoubleOrNull()
-        if (got != null && tot != null && tot > 0.0) return got to tot
+    if (explicit != null) {
+        val got = explicit.groupValues[1].toDoubleOrNull()
+        val tot = explicit.groupValues[2].toDoubleOrNull()
+        if (got != null && tot != null && tot > 0.0 && got <= tot) return got to tot
     }
     return null
 }
@@ -302,37 +337,29 @@ private val INJECTED_OBSERVER_JS = """
 (function() {
   if (window.__ltHooked) return;
   window.__ltHooked = true;
-  function extractAndNotify() {
+  function extractResultOnly() {
     var bodyText = document.body ? document.body.innerText : '';
-    var slashMatch = bodyText.match(/(?:score|marks|result|अंक|प्राप्तांक)?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*(\d+(?:\.\d+)?)/i);
-    if (slashMatch) {
-      var got = parseFloat(slashMatch[1]);
-      var tot = parseFloat(slashMatch[2]);
-      if (!isNaN(got) && !isNaN(tot) && tot > 0 && window.LearnTalentBridge) {
-        window.LearnTalentBridge.submitScore(got, tot, slashMatch[0].trim());
-        return true;
-      }
-    }
-    var pctMatch = bodyText.match(/(\d+(?:\.\d+)?)\s*%/);
-    if (pctMatch && window.LearnTalentBridge) {
-      var pct = parseFloat(pctMatch[1]);
-      if (!isNaN(pct)) {
-        window.LearnTalentBridge.submitScore(pct, 100, pct + '%');
+    var m = bodyText.match(/(?:your\s*score|total\s*score|final\s*score|marks\s*obtained|result|प्राप्तांक|कुल\s*अंक)\s*[:=\-]?\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*(\d+(?:\.\d+)?)/i);
+    if (m) {
+      var got = parseFloat(m[1]);
+      var tot = parseFloat(m[2]);
+      if (!isNaN(got) && !isNaN(tot) && tot > 0 && got <= tot && window.LearnTalentBridge) {
+        window.LearnTalentBridge.submitScore(got, tot, m[0].trim());
         return true;
       }
     }
     return false;
   }
   document.addEventListener('submit', function() {
-    setTimeout(extractAndNotify, 450);
+    setTimeout(extractResultOnly, 600);
   }, true);
   document.addEventListener('click', function(e) {
     var el = e.target;
     while (el && el !== document.body) {
-      var txt = (el.innerText || el.value || el.id || el.className || '').toLowerCase();
+      var txt = (el.innerText || el.value || '').toLowerCase();
       if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button'))) {
-        if (txt.indexOf('submit') !== -1 || txt.indexOf('finish') !== -1 || txt.indexOf('result') !== -1 || txt.indexOf('सबमिट') !== -1 || txt.indexOf('जमा') !== -1) {
-          setTimeout(extractAndNotify, 450);
+        if (txt.indexOf('submit test') !== -1 || txt.indexOf('finish test') !== -1 || txt.indexOf('final submit') !== -1 || txt.indexOf('सबमिट') !== -1) {
+          setTimeout(extractResultOnly, 600);
           break;
         }
       }

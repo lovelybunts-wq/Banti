@@ -200,7 +200,7 @@ test("Authenticated owner: valid Kotlin payloads succeed across subjects, topics
     })
   );
 
-  // RevisionDiary
+  // RevisionDiary with PDF attachment
   await assertSucceeds(
     aliceDb.doc(`users/${ALICE_UID}/revisionDiary/diary_1`).set({
       userId: ALICE_UID,
@@ -209,6 +209,8 @@ test("Authenticated owner: valid Kotlin payloads succeed across subjects, topics
       subjectName: "Polity",
       sourceName: "Laxmikant Ch-7",
       content: "Articles 12-35 key points revised.",
+      pdfTitle: "FR_Notes.pdf",
+      pdfLocalFileName: "diary_1_FR_Notes.pdf",
       createdAt: past,
       updatedAt: past,
     })
@@ -216,7 +218,24 @@ test("Authenticated owner: valid Kotlin payloads succeed across subjects, topics
   await assertSucceeds(
     aliceDb.doc(`users/${ALICE_UID}/revisionDiary/diary_1`).update({
       sourceName: "Laxmikant Ch-7 + NCERT",
+      pdfTitle: "FR_Notes_v2.pdf",
       updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // Admin-only appConfig/support rule
+  const adminDb = testEnv.authenticatedContext("admin_uid", { email: "lovely.bunts@gmail.com" }).firestore();
+  await assertSucceeds(
+    adminDb.doc("appConfig/support").set({
+      whatsappDigits: "917049126747",
+      updatedAt: past,
+    })
+  );
+  await assertSucceeds(aliceDb.doc("appConfig/support").get());
+  await assertFails(
+    aliceDb.doc("appConfig/support").set({
+      whatsappDigits: "919999999999",
+      updatedAt: past,
     })
   );
 
