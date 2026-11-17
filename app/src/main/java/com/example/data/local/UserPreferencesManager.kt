@@ -33,6 +33,8 @@ data class LocalAppSettings(
     val driveUserEmail: String = "",
     val driveUserName: String = "",
     val driveUserPhotoUrl: String = "",
+    val sharedCatalogUrl: String = "",
+    val lastDriveSyncMessage: String = "",
 )
 
 class UserPreferencesManager(private val context: Context) {
@@ -54,6 +56,8 @@ class UserPreferencesManager(private val context: Context) {
         val DRIVE_USER_EMAIL = stringPreferencesKey("drive_user_email")
         val DRIVE_USER_NAME = stringPreferencesKey("drive_user_name")
         val DRIVE_USER_PHOTO_URL = stringPreferencesKey("drive_user_photo_url")
+        val SHARED_CATALOG_URL = stringPreferencesKey("shared_catalog_url")
+        val LAST_DRIVE_SYNC_MESSAGE = stringPreferencesKey("last_drive_sync_message")
         fun seededKey(uid: String) = booleanPreferencesKey("seeded_$uid")
     }
 
@@ -76,6 +80,8 @@ class UserPreferencesManager(private val context: Context) {
             driveUserEmail = prefs[Keys.DRIVE_USER_EMAIL] ?: "",
             driveUserName = prefs[Keys.DRIVE_USER_NAME] ?: "",
             driveUserPhotoUrl = prefs[Keys.DRIVE_USER_PHOTO_URL] ?: "",
+            sharedCatalogUrl = prefs[Keys.SHARED_CATALOG_URL] ?: "",
+            lastDriveSyncMessage = prefs[Keys.LAST_DRIVE_SYNC_MESSAGE] ?: "",
         )
     }
 
@@ -123,8 +129,15 @@ class UserPreferencesManager(private val context: Context) {
         context.dataStore.edit { it[Keys.CUSTOM_LOGO_FILE_NAME] = fileName }
     }
 
-    suspend fun setLastDriveBackupMillis(millis: Long) {
-        context.dataStore.edit { it[Keys.LAST_DRIVE_BACKUP_MILLIS] = millis }
+    suspend fun setLastDriveBackupMillis(millis: Long, message: String = "") {
+        context.dataStore.edit {
+            it[Keys.LAST_DRIVE_BACKUP_MILLIS] = millis
+            if (message.isNotBlank()) it[Keys.LAST_DRIVE_SYNC_MESSAGE] = message
+        }
+    }
+
+    suspend fun setSharedCatalogUrl(url: String) {
+        context.dataStore.edit { it[Keys.SHARED_CATALOG_URL] = url.trim() }
     }
 
     suspend fun setDriveUserSession(userId: String, email: String, name: String, photoUrl: String = "") {
@@ -142,6 +155,7 @@ class UserPreferencesManager(private val context: Context) {
             it.remove(Keys.DRIVE_USER_EMAIL)
             it.remove(Keys.DRIVE_USER_NAME)
             it.remove(Keys.DRIVE_USER_PHOTO_URL)
+            it.remove(Keys.LAST_DRIVE_SYNC_MESSAGE)
         }
     }
 

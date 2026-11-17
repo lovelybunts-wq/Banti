@@ -1,10 +1,6 @@
 package com.example.data.model
 
 import androidx.annotation.Keep
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.DocumentId
-import com.google.firebase.firestore.IgnoreExtraProperties
-import com.google.firebase.firestore.ServerTimestamp
 import kotlinx.serialization.Serializable
 
 sealed interface UiState<out T> {
@@ -12,6 +8,12 @@ sealed interface UiState<out T> {
     data class Success<T>(val data: T) : UiState<T>
     data class Error(val message: String) : UiState<Nothing>
 }
+
+@Keep
+@Serializable
+data class StudyTimestamp(
+    val seconds: Long = System.currentTimeMillis() / 1000L,
+)
 
 enum class NoteType {
     PDF,
@@ -59,9 +61,9 @@ enum class PersonalNoteBlockType {
 }
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class UserProfile(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val displayName: String = "",
     val email: String? = null,
@@ -70,14 +72,14 @@ data class UserProfile(
     val examName: String? = null,
     val examDateMillis: Long? = null,
     val themeId: String = "bunts_royal_light",
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class Subject(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val nameEn: String = "",
     val nameHi: String? = null,
@@ -86,28 +88,28 @@ data class Subject(
     val sortOrder: Long = 0L,
     val isShared: Boolean = false,
     val published: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class Topic(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val subjectId: String = "",
     val name: String = "",
     val description: String? = null,
     val isShared: Boolean = false,
     val published: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class Subtopic(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val subjectId: String = "",
     val topicId: String = "",
@@ -115,14 +117,14 @@ data class Subtopic(
     val lastStudiedDate: String? = null,
     val isShared: Boolean = false,
     val published: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class StudyNote(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val subjectId: String = "",
     val topicId: String = "",
@@ -141,16 +143,16 @@ data class StudyNote(
     val downloadsCount: Long = 0L,
     val fileSizeBytes: Long = 0L,
     val isMockTest: Boolean = false,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 ) {
     fun resolvedType(): NoteType = NoteType.fromRaw(noteType)
 }
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class VideoLink(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val subjectId: String = "",
     val topicId: String = "",
@@ -161,14 +163,14 @@ data class VideoLink(
     val lastWatchedDate: String? = null,
     val isShared: Boolean = false,
     val published: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class McqQuestion(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val subjectId: String = "",
     val topicId: String = "",
@@ -179,8 +181,8 @@ data class McqQuestion(
     val explanation: String? = null,
     val isShared: Boolean = false,
     val published: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Serializable
@@ -213,9 +215,9 @@ data class InProgressTestAttempt(
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class TestResult(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val subjectId: String = "",
     val topicId: String = "",
@@ -235,14 +237,14 @@ data class TestResult(
     val breakdownJson: String? = null,
     val summaryText: String? = null,
     val takenDate: String = "",
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class StudyLog(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val dateKey: String = "",
     val entryType: String = "PLANNED",
@@ -251,14 +253,14 @@ data class StudyLog(
     val subtopicId: String? = null,
     val completed: Boolean = false,
     val notes: String? = null,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class RevisionDiaryEntry(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val dateKey: String = "",
     val title: String = "",
@@ -267,8 +269,8 @@ data class RevisionDiaryEntry(
     val content: String = "",
     val pdfTitle: String? = null,
     val pdfLocalFileName: String? = null,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Serializable
@@ -285,9 +287,9 @@ data class PersonalNoteBlock(
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class PersonalNote(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val subjectId: String = "",
     val subjectName: String = "",
@@ -296,14 +298,14 @@ data class PersonalNote(
     val contentSummary: String = "",
     val blocksJson: String = "[]",
     val updatedAtMillis: Long = 0L,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class BookmarkItem(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val bookmarkType: String = BookmarkType.FAVORITE_NOTE.name,
     val title: String = "",
@@ -315,8 +317,8 @@ data class BookmarkItem(
     val pageIndex: Int = 0,
     val questionJson: String? = null,
     val createdAtMillis: Long = 0L,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Serializable
@@ -333,9 +335,9 @@ data class RecentActivityItem(
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class WhatsAppRequestRecord(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val studentName: String = "",
     val studentEmail: String = "",
@@ -345,14 +347,14 @@ data class WhatsAppRequestRecord(
     val subtopic: String = "",
     val extraMessage: String = "",
     val status: String = "PENDING",
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class StudentSummary(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val displayName: String = "",
     val email: String = "",
@@ -361,21 +363,21 @@ data class StudentSummary(
     val testAttemptsCount: Long = 0L,
     val averageScorePct: Double = 0.0,
     val lastActiveMillis: Long = 0L,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class FullLengthExam(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val name: String = "",
     val subtitle: String? = null,
     val isShared: Boolean = false,
     val published: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 object FullLengthExamDefaults {
@@ -392,4 +394,3 @@ object FullLengthExamDefaults {
         FullLengthExam(id = "exam_railway_rrb", name = "Railway RRB (NTPC / Group D)", subtitle = "CBT-1 & CBT-2 Full Length Mock Tests", isShared = false, published = true),
     )
 }
-

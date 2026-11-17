@@ -3,19 +3,20 @@ package com.example.data.local
 import com.example.data.model.BookmarkItem
 import com.example.data.model.BookmarkType
 import com.example.data.model.CloudPdfAnnotationDoc
+import com.example.data.model.FullLengthExam
 import com.example.data.model.McqQuestion
 import com.example.data.model.NoteType
 import com.example.data.model.PersonalNote
 import com.example.data.model.RevisionDiaryEntry
 import com.example.data.model.StudyLog
 import com.example.data.model.StudyNote
+import com.example.data.model.StudyTimestamp
 import com.example.data.model.Subject
 import com.example.data.model.Subtopic
 import com.example.data.model.TestResult
 import com.example.data.model.Topic
 import com.example.data.model.UserProfile
 import com.example.data.model.VideoLink
-import com.google.firebase.Timestamp
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -55,6 +56,14 @@ data class OfflineSubtopicDto(
     val topicId: String,
     val name: String,
     val lastStudiedDate: String? = null,
+)
+
+@Serializable
+data class OfflineFullLengthExamDto(
+    val id: String,
+    val name: String,
+    val subtitle: String? = null,
+    val updatedAtSeconds: Long = 0L,
 )
 
 @Serializable
@@ -188,6 +197,7 @@ data class OfflineVaultSnapshot(
     val subjects: List<OfflineSubjectDto> = emptyList(),
     val topics: List<OfflineTopicDto> = emptyList(),
     val subtopics: List<OfflineSubtopicDto> = emptyList(),
+    val fullLengthExams: List<OfflineFullLengthExamDto> = emptyList(),
     val notes: List<OfflineNoteDto> = emptyList(),
     val videos: List<OfflineVideoDto> = emptyList(),
     val mcqs: List<OfflineMcqDto> = emptyList(),
@@ -198,6 +208,36 @@ data class OfflineVaultSnapshot(
     val bookmarks: List<OfflineBookmarkDto> = emptyList(),
     val pdfAnnotations: List<OfflinePdfAnnotationDto> = emptyList(),
     val hasUserEdits: Boolean = false,
+)
+
+@Serializable
+data class DriveSubjectProgressItem(
+    val subjectId: String,
+    val subjectName: String,
+    val attemptsCount: Int,
+    val averagePercentage: Double,
+    val bestPercentage: Double,
+)
+
+@Serializable
+data class DriveProgressReportPayload(
+    val userId: String,
+    val studentName: String,
+    val email: String,
+    val role: String,
+    val examName: String? = null,
+    val examDateMillis: Long? = null,
+    val totalTestsAttempted: Int,
+    val averagePercentage: Double,
+    val bestPercentage: Double,
+    val totalNotesCount: Int,
+    val personalNotesCount: Int,
+    val bookmarksCount: Int,
+    val revisionDiaryCount: Int,
+    val completedStudyTasks: Int,
+    val totalStudyTasks: Int,
+    val subjectBreakdown: List<DriveSubjectProgressItem> = emptyList(),
+    val generatedAtMillis: Long = System.currentTimeMillis(),
 )
 
 internal fun OfflineUserProfileDto.toModel() = UserProfile(
@@ -239,6 +279,16 @@ internal fun OfflineSubtopicDto.toModel(ownerId: String) = Subtopic(
     lastStudiedDate = lastStudiedDate,
 )
 
+internal fun OfflineFullLengthExamDto.toModel(ownerId: String) = FullLengthExam(
+    id = id,
+    userId = ownerId,
+    name = name,
+    subtitle = subtitle,
+    isShared = false,
+    published = true,
+    updatedAt = if (updatedAtSeconds > 0) StudyTimestamp(updatedAtSeconds) else null,
+)
+
 internal fun OfflineNoteDto.toModel(ownerId: String) = StudyNote(
     id = id,
     userId = ownerId,
@@ -252,7 +302,7 @@ internal fun OfflineNoteDto.toModel(ownerId: String) = StudyNote(
     htmlContent = htmlContent,
     lastOpenedDate = lastOpenedDate,
     isMockTest = isMockTest,
-    updatedAt = if (updatedAtSeconds > 0) Timestamp(updatedAtSeconds, 0) else null,
+    updatedAt = if (updatedAtSeconds > 0) StudyTimestamp(updatedAtSeconds) else null,
 )
 
 internal fun OfflineVideoDto.toModel(ownerId: String) = VideoLink(
@@ -265,7 +315,7 @@ internal fun OfflineVideoDto.toModel(ownerId: String) = VideoLink(
     youtubeUrl = youtubeUrl,
     channelOrNote = channelOrNote,
     lastWatchedDate = lastWatchedDate,
-    createdAt = if (createdAtSeconds > 0) Timestamp(createdAtSeconds, 0) else null,
+    createdAt = if (createdAtSeconds > 0) StudyTimestamp(createdAtSeconds) else null,
 )
 
 internal fun OfflineMcqDto.toModel(ownerId: String) = McqQuestion(
@@ -278,7 +328,7 @@ internal fun OfflineMcqDto.toModel(ownerId: String) = McqQuestion(
     options = options,
     correctIndex = correctIndex,
     explanation = explanation,
-    createdAt = if (createdAtSeconds > 0) Timestamp(createdAtSeconds, 0) else null,
+    createdAt = if (createdAtSeconds > 0) StudyTimestamp(createdAtSeconds) else null,
 )
 
 internal fun OfflineTestResultDto.toModel(ownerId: String) = TestResult(
@@ -302,7 +352,7 @@ internal fun OfflineTestResultDto.toModel(ownerId: String) = TestResult(
     breakdownJson = breakdownJson,
     summaryText = summaryText,
     takenDate = takenDate,
-    createdAt = if (createdAtSeconds > 0) Timestamp(createdAtSeconds, 0) else null,
+    createdAt = if (createdAtSeconds > 0) StudyTimestamp(createdAtSeconds) else null,
 )
 
 internal fun OfflineStudyLogDto.toModel(ownerId: String) = StudyLog(
@@ -327,7 +377,7 @@ internal fun OfflineRevisionDiaryDto.toModel(ownerId: String) = RevisionDiaryEnt
     content = content,
     pdfTitle = pdfTitle,
     pdfLocalFileName = pdfLocalFileName,
-    updatedAt = if (updatedAtSeconds > 0) Timestamp(updatedAtSeconds, 0) else null,
+    updatedAt = if (updatedAtSeconds > 0) StudyTimestamp(updatedAtSeconds) else null,
 )
 
 internal fun OfflinePersonalNoteDto.toModel(ownerId: String) = PersonalNote(
@@ -340,7 +390,7 @@ internal fun OfflinePersonalNoteDto.toModel(ownerId: String) = PersonalNote(
     contentSummary = contentSummary,
     blocksJson = blocksJson,
     updatedAtMillis = updatedAtMillis,
-    updatedAt = if (updatedAtMillis > 0L) Timestamp(updatedAtMillis / 1000L, 0) else null,
+    updatedAt = if (updatedAtMillis > 0L) StudyTimestamp(updatedAtMillis / 1000L) else null,
 )
 
 internal fun OfflineBookmarkDto.toModel(ownerId: String) = BookmarkItem(
@@ -356,7 +406,7 @@ internal fun OfflineBookmarkDto.toModel(ownerId: String) = BookmarkItem(
     pageIndex = pageIndex,
     questionJson = questionJson,
     createdAtMillis = createdAtMillis,
-    createdAt = if (createdAtMillis > 0L) Timestamp(createdAtMillis / 1000L, 0) else null,
+    createdAt = if (createdAtMillis > 0L) StudyTimestamp(createdAtMillis / 1000L) else null,
 )
 
 internal fun OfflinePdfAnnotationDto.toModel(ownerId: String) = CloudPdfAnnotationDoc(

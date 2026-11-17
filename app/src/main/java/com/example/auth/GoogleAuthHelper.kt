@@ -2,260 +2,155 @@ package com.example.auth
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.content.IntentSender
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
-import androidx.credentials.CustomCredential
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.exceptions.GetCredentialCancellationException
-import androidx.credentials.exceptions.NoCredentialException
-import com.example.R
+import com.example.data.local.LocalAppSettings
+import com.example.data.local.LocalOfflineStore
 import com.example.data.local.UserPreferencesManager
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
-import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
-import com.google.firebase.Firebase
-import com.google.firebase.FirebaseApp
-import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.auth.GoogleAuthProvider
-import com.google.firebase.auth.auth
-import com.google.firebase.auth.userProfileChangeRequest
-import kotlinx.coroutines.CoroutineScope
+import com.example.data.remote.DriveAuthOutcome
+import com.example.data.remote.GoogleDriveBackupManager
+import com.example.data.remote.awaitGmsTask
+import com.google.android.gms.auth.api.identity.Identity
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
+data class GoogleSessionUser(
+    val uid: String,
+    val displayName: String,
+    val email: String,
+    val photoUrl: String? = null,
+    val isOffline: Boolean = false,
+)
+
+sealed interface GoogleSignInResult {
+    data class Success(val session: GoogleSessionUser, val accessToken: String) : GoogleSignInResult
+    data class NeedsConsentUi(val intentSender: IntentSender) : GoogleSignInResult
+    data class Error(val message: String) : GoogleSignInResult
+}
+
 object GoogleAuthHelper {
-    private const val TAG = "Auth"
+    private const val TAG = "GoogleOAuth"
 
-    fun isFirebaseInitialized(context: Context): Boolean {
-        val appCtx = context.applicationContext
-        val existing = runCatching { FirebaseApp.getApps(appCtx).isNotEmpty() }.getOrDefault(false)
-        if (existing) return true
-        return runCatching { FirebaseApp.initializeApp(appCtx) != null }.getOrDefault(false)
-    }
+    fun offlineSession(): GoogleSessionUser = GoogleSessionUser(
+        uid = LocalOfflineStore.OFFLINE_UID,
+        displayName = "Offline Learner",
+        email = "",
+        photoUrl = null,
+        isOffline = true,
+    )
 
-    fun safeCurrentUser(context: Context): FirebaseUser? {
-        if (!isFirebaseInitialized(context)) return null
-        return runCatching { Firebase.auth.currentUser }.getOrNull()
-    }
-
-    fun currentUserEmail(context: Context): String =
-        safeCurrentUser(context)?.email?.trim().orEmpty()
-
-    fun currentUserName(context: Context): String {
-        val user = safeCurrentUser(context) ?: return ""
-        return resolveDisplayName(user)
-    }
-
-    fun resolveDisplayName(user: FirebaseUser?): String {
-        if (user == null) return "Student"
-        user.displayName?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
-        user.providerData.firstNotNullOfOrNull { it.displayName?.trim()?.takeIf { n -> n.isNotBlank() } }?.let { return it }
-        user.email?.substringBefore("@")?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
-        return "Student"
-    }
-
-    fun resolveEmail(user: FirebaseUser?): String? {
-        if (user == null) return null
-        return user.email?.trim()?.takeIf { it.isNotBlank() }
-            ?: user.providerData.firstNotNullOfOrNull { it.email?.trim()?.takeIf { e -> e.isNotBlank() } }
-    }
-
-    fun resolvePhotoUrl(user: FirebaseUser?): String? {
-        if (user == null) return null
-        return user.photoUrl?.toString()?.takeIf { it.isNotBlank() }
-            ?: user.providerData.firstNotNullOfOrNull { it.photoUrl?.toString()?.takeIf { p -> p.isNotBlank() } }
-    }
-
-    fun currentUserPhotoUrl(context: Context): String? =
-        resolvePhotoUrl(safeCurrentUser(context))
-
-    fun isCurrentUserAdmin(context: Context): Boolean =
-        currentUserEmail(context).equals(UserPreferencesManager.ADMIN_EMAIL, ignoreCase = true)
-
-    fun resolveWebClientId(context: Context): String? =
-        runCatching { context.getString(R.string.default_web_client_id) }
-            .getOrNull()
-            ?.takeIf { it.isNotBlank() }
-
-    private suspend fun signInFirebaseWithGoogleToken(googleCred: GoogleIdTokenCredential): FirebaseUser? {
-        val authResult = Firebase.auth
-            .signInWithCredential(GoogleAuthProvider.getCredential(googleCred.idToken, null))
-            .await()
-        val user = authResult.user ?: Firebase.auth.currentUser
-        if (user != null) {
-            val wantedName = googleCred.displayName?.trim()?.takeIf { it.isNotBlank() }
-                ?: googleCred.givenName?.trim()?.takeIf { it.isNotBlank() }
-                ?: googleCred.id.substringBefore("@").takeIf { it.isNotBlank() }
-            val wantedPhoto = googleCred.profilePictureUri
-            val needsProfileSync = (user.displayName.isNullOrBlank() && !wantedName.isNullOrBlank()) ||
-                (user.photoUrl == null && wantedPhoto != null)
-            if (needsProfileSync) {
-                runCatching {
-                    val updates = userProfileChangeRequest {
-                        if (user.displayName.isNullOrBlank() && !wantedName.isNullOrBlank()) {
-                            displayName = wantedName
-                        }
-                        if (user.photoUrl == null && wantedPhoto != null) {
-                            photoUri = wantedPhoto
-                        }
-                    }
-                    user.updateProfile(updates).await()
-                    user.reload().await()
-                }.onFailure { err ->
-                    Log.w(TAG, "Non-fatal profile sync warning: ${err.message}")
-                }
-            }
-        }
-        return Firebase.auth.currentUser ?: user
-    }
-
-    fun attemptAutoSignIn(
-        context: Context,
-        credentialManager: CredentialManager,
-        onAuthSuccess: (FirebaseUser?) -> Unit,
-        onUnauthenticated: () -> Unit,
-        scope: CoroutineScope,
-    ) {
-        if (!isFirebaseInitialized(context)) {
-            onUnauthenticated()
-            return
-        }
-        safeCurrentUser(context)?.let { existing ->
-            onAuthSuccess(existing)
-            return
-        }
-        val clientId = resolveWebClientId(context)
-        if (clientId == null) {
-            onUnauthenticated()
-            return
-        }
-        val googleIdOption = GetGoogleIdOption.Builder()
-            .setFilterByAuthorizedAccounts(true)
-            .setServerClientId(clientId)
-            .setAutoSelectEnabled(true)
-            .build()
-        val request = GetCredentialRequest.Builder()
-            .addCredentialOption(googleIdOption)
-            .build()
-        scope.launch {
-            try {
-                val cred = credentialManager.getCredential(context, request).credential
-                if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                    val googleCred = GoogleIdTokenCredential.createFrom(cred.data)
-                    val signedIn = signInFirebaseWithGoogleToken(googleCred)
-                    if (signedIn != null) onAuthSuccess(signedIn) else onUnauthenticated()
-                } else {
-                    onUnauthenticated()
-                }
-            } catch (_: Exception) {
-                onUnauthenticated()
-            }
-        }
-    }
-
-    fun onGoogleSignInClicked(
-        context: Context,
-        credentialManager: CredentialManager,
-        onAuthSuccess: (FirebaseUser?) -> Unit,
-        onAuthError: (String) -> Unit,
-        scope: CoroutineScope,
-        onAuthCancelled: () -> Unit = {},
-    ) {
-        if (!isFirebaseInitialized(context)) {
-            onAuthError(
-                "Firebase / Google login config (google-services.json) इस बिल्ड में मौजूद नहीं है।\n" +
-                    "यदि आपने GitHub से APK बनाया है तो Repository Secrets में GOOGLE_SERVICES_JSON जोड़ें।"
+    fun sessionFromSettings(settings: LocalAppSettings): GoogleSessionUser? {
+        if (settings.driveUserId.isNotBlank() && settings.driveUserEmail.isNotBlank()) {
+            return GoogleSessionUser(
+                uid = settings.driveUserId,
+                displayName = settings.driveUserName.ifBlank { settings.driveUserEmail.substringBefore("@") }.ifBlank { "Student" },
+                email = settings.driveUserEmail,
+                photoUrl = settings.driveUserPhotoUrl.takeIf { it.isNotBlank() },
+                isOffline = false,
             )
-            return
         }
-        val clientId = resolveWebClientId(context)
-        if (clientId == null) {
-            onAuthError(
-                "Google Sign-In Web Client ID (default_web_client_id) missing. Firebase Console -> Authentication -> Google Sign-In सक्षम करें।"
+        if (settings.offlineModeAccepted) {
+            return offlineSession()
+        }
+        return null
+    }
+
+    fun resolveRole(email: String?): String =
+        if (email.equals(UserPreferencesManager.ADMIN_EMAIL, ignoreCase = true)) "admin" else "student"
+
+    fun isAdminEmail(email: String?): Boolean = resolveRole(email) == "admin"
+
+    suspend fun startGoogleSignIn(
+        activity: Activity,
+        driveManager: GoogleDriveBackupManager,
+        prefs: UserPreferencesManager,
+    ): GoogleSignInResult {
+        return when (val outcome = driveManager.requestAccountAndDriveAuthorization(activity)) {
+            is DriveAuthOutcome.Authorized -> completeSignInWithToken(outcome.accessToken, driveManager, prefs)
+            is DriveAuthOutcome.NeedsResolution -> GoogleSignInResult.NeedsConsentUi(outcome.intentSender)
+            is DriveAuthOutcome.Error -> GoogleSignInResult.Error(friendlyOAuthMessage(outcome.message))
+        }
+    }
+
+    suspend fun completeSignInFromIntent(
+        activity: Activity,
+        data: Intent?,
+        driveManager: GoogleDriveBackupManager,
+        prefs: UserPreferencesManager,
+    ): GoogleSignInResult {
+        val token = driveManager.extractTokenFromIntent(activity, data)
+            ?: return GoogleSignInResult.Error("Google sign-in cancelled or token was not returned.")
+        return completeSignInWithToken(token, driveManager, prefs)
+    }
+
+    private suspend fun completeSignInWithToken(
+        accessToken: String,
+        driveManager: GoogleDriveBackupManager,
+        prefs: UserPreferencesManager,
+    ): GoogleSignInResult {
+        val profile = driveManager.fetchGoogleUserProfile(accessToken).getOrElse { err ->
+            Log.w(TAG, "Profile fetch error: ${err.message}")
+            return GoogleSignInResult.Error(
+                "Google खाते की प्रोफाइल नहीं मिल सकी (${err.message ?: "Network error"})। इंटरनेट जांचकर पुनः प्रयास करें।"
             )
-            return
         }
-        val activity = context as? Activity
-        if (activity == null) {
-            onAuthError("Google Sign-In के लिए Activity उपलब्ध नहीं है।")
-            return
+        if (profile.email.isBlank()) {
+            return GoogleSignInResult.Error("Google खाते से Gmail पता प्राप्त नहीं हुआ। कृपया पुनः प्रयास करें।")
         }
+        prefs.setDriveUserSession(
+            userId = profile.id,
+            email = profile.email,
+            name = profile.name,
+            photoUrl = profile.photoUrl.orEmpty(),
+        )
+        prefs.setOfflineModeAccepted(true)
+        val session = GoogleSessionUser(
+            uid = profile.id,
+            displayName = profile.name,
+            email = profile.email,
+            photoUrl = profile.photoUrl,
+            isOffline = false,
+        )
+        return GoogleSignInResult.Success(session = session, accessToken = accessToken)
+    }
 
-        scope.launch {
-            try {
-                val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
-                val request = GetCredentialRequest.Builder()
-                    .addCredentialOption(signInOption)
-                    .build()
-                val cred = try {
-                    credentialManager.getCredential(activity, request).credential
-                } catch (noCred: NoCredentialException) {
-                    Log.w(TAG, "GetSignInWithGoogleOption returned NoCredentialException, trying GetGoogleIdOption fallback", noCred)
-                    val fallbackOption = GetGoogleIdOption.Builder()
-                        .setFilterByAuthorizedAccounts(false)
-                        .setServerClientId(clientId)
-                        .setAutoSelectEnabled(false)
-                        .build()
-                    val fallbackReq = GetCredentialRequest.Builder()
-                        .addCredentialOption(fallbackOption)
-                        .build()
-                    credentialManager.getCredential(activity, fallbackReq).credential
-                }
+    suspend fun silentRefreshDriveToken(
+        context: Context,
+        driveManager: GoogleDriveBackupManager,
+    ): String? = driveManager.silentGetDriveToken(context)
 
-                if (cred is CustomCredential && cred.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                    val googleCred = GoogleIdTokenCredential.createFrom(cred.data)
-                    val signedIn = signInFirebaseWithGoogleToken(googleCred)
-                    if (signedIn != null) {
-                        onAuthSuccess(signedIn)
-                    } else {
-                        onAuthError("Google खाता सत्यापित हुआ पर Firebase सेशन शुरू नहीं हो सका। कृपया पुनः प्रयास करें।")
-                    }
-                } else {
-                    onAuthError("Google से अमान्य क्रेडेंशियल प्राप्त हुआ। कृपया पुनः प्रयास करें।")
-                }
-            } catch (e: GetCredentialCancellationException) {
-                Log.w(TAG, "Google Sign-In cancelled or dismissed: ${e.message}", e)
-                onAuthCancelled()
-            } catch (e: NoCredentialException) {
-                Log.e(TAG, "No Google credential available", e)
-                onAuthError(
-                    "इस डिवाइस पर कोई Google Account लॉगिन नहीं मिला या SHA-1 सेटअप अधूरा है।\n" +
-                        "कृपया फोन सेटिंग्स में Gmail Account जोड़ें और इंटरनेट जांचें।"
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Google Sign-In failed", e)
-                val msg = e.localizedMessage ?: "Google Sign-In failed"
-                onAuthError(
-                    if (msg.contains("10:") || msg.contains("DEVELOPER_ERROR", ignoreCase = true)) {
-                        "Google Sign-In SHA-1 / OAuth Config Error (Code 10): Firebase Console में App का SHA-1 व SHA-256 जोड़कर google-services.json अपडेट करें।"
-                    } else {
-                        "लॉगिन त्रुटि: $msg"
-                    }
-                )
+    suspend fun signOut(
+        context: Context,
+        prefs: UserPreferencesManager,
+        returnToAuthScreen: Boolean = true,
+    ) {
+        withContext(NonCancellable) {
+            runCatching {
+                CredentialManager.create(context).clearCredentialState(ClearCredentialStateRequest())
+            }
+            runCatching {
+                Identity.getSignInClient(context).signOut().awaitGmsTask()
+            }
+            prefs.clearDriveUserSession()
+            if (returnToAuthScreen) {
+                prefs.setOfflineModeAccepted(false)
             }
         }
     }
 
-    fun signOut(
-        credentialManager: CredentialManager,
-        scope: CoroutineScope,
-        onSignOutComplete: () -> Unit = {},
-    ) {
-        scope.launch {
-            withContext(NonCancellable) {
-                try {
-                    credentialManager.clearCredentialState(ClearCredentialStateRequest())
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to clear credential state: ${e.message}")
-                } finally {
-                    runCatching { Firebase.auth.signOut() }
-                    onSignOutComplete()
-                }
-            }
+    private fun friendlyOAuthMessage(raw: String): String {
+        val lower = raw.lowercase()
+        return when {
+            "10:" in lower || "developer_error" in lower ->
+                "Google OAuth SHA-1 / Package Config त्रुटि (Code 10)। Google Cloud Console में package com.aistudio.learntalent.xkqmtz व SHA-1 जोड़ें और Drive API सक्षम करें।"
+            "16:" in lower || "cancel" in lower ->
+                "Google लॉगिन रद्द किया गया।"
+            "network" in lower || "timeout" in lower || "unable to resolve host" in lower ->
+                "इंटरनेट कनेक्शन उपलब्ध नहीं है। आप 'Continue Offline' से पढ़ाई जारी रख सकते हैं।"
+            else -> raw
         }
     }
 }

@@ -1,10 +1,6 @@
 package com.example.data.model
 
 import androidx.annotation.Keep
-import com.google.firebase.Timestamp
-import com.google.firebase.firestore.DocumentId
-import com.google.firebase.firestore.IgnoreExtraProperties
-import com.google.firebase.firestore.ServerTimestamp
 import kotlinx.serialization.Serializable
 
 enum class PdfToolType(val label: String) {
@@ -66,15 +62,15 @@ data class PdfAnnotationDocument(
 )
 
 @Keep
-@IgnoreExtraProperties
+@Serializable
 data class CloudPdfAnnotationDoc(
-    @DocumentId val id: String = "",
+    val id: String = "",
     val userId: String = "",
     val noteId: String = "",
     val annotationsJson: String = "",
     val updatedAtMillis: Long = 0L,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null,
+    val createdAt: StudyTimestamp? = null,
+    val updatedAt: StudyTimestamp? = null,
 )
 
 object PdfInkPalette {

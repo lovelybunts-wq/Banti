@@ -5,6 +5,7 @@ import com.example.data.model.BookmarkItem
 import com.example.data.model.BookmarkType
 import com.example.data.model.CloudPdfAnnotationDoc
 import com.example.data.model.DefaultSubjectsSeed
+import com.example.data.model.FullLengthExam
 import com.example.data.model.McqQuestion
 import com.example.data.model.NoteType
 import com.example.data.model.PersonalNote
@@ -17,7 +18,6 @@ import com.example.data.model.TestResult
 import com.example.data.model.Topic
 import com.example.data.model.UserProfile
 import com.example.data.model.VideoLink
-import com.example.data.remote.StudyRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +32,16 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 
+data class DriveStructuredFilesPayload(
+    val fullBackupJson: String,
+    val studentProfileJson: String,
+    val examResultsJson: String,
+    val testHistoryJson: String,
+    val notesIndexJson: String,
+    val bookmarksJson: String,
+    val progressReportJson: String,
+)
+
 class LocalOfflineStore(
     private val context: Context,
     val ownerId: String = OFFLINE_UID,
@@ -39,6 +49,11 @@ class LocalOfflineStore(
     private val json = Json {
         ignoreUnknownKeys = true
         prettyPrint = false
+        encodeDefaults = true
+    }
+    private val prettyJson = Json {
+        ignoreUnknownKeys = true
+        prettyPrint = true
         encodeDefaults = true
     }
     private val mutex = Mutex()
@@ -62,6 +77,9 @@ class LocalOfflineStore(
 
     private val _subtopics = MutableStateFlow(snapshot.subtopics.map { it.toModel(ownerId) }.sortedBy { it.name.lowercase() })
     val subtopics: StateFlow<List<Subtopic>> = _subtopics.asStateFlow()
+
+    private val _fullLengthExams = MutableStateFlow(snapshot.fullLengthExams.map { it.toModel(ownerId) })
+    val fullLengthExams: StateFlow<List<FullLengthExam>> = _fullLengthExams.asStateFlow()
 
     private val _notes = MutableStateFlow(snapshot.notes.map { it.toModel(ownerId) }.sortedByDescending { it.updatedAt?.seconds ?: 0L })
     val notes: StateFlow<List<StudyNote>> = _notes.asStateFlow()
@@ -92,6 +110,74 @@ class LocalOfflineStore(
 
     fun currentSnapshot(): OfflineVaultSnapshot = snapshot
 
+    fun hasPendingCloudChanges(): Boolean = snapshot.hasUserEdits
+
+    fun exportCurrentSnapshotJson(): String = json.encodeToString(snapshot)
+
+    fun buildStructuredDrivePayload(): DriveStructuredFilesPayload {
+        val snap = snapshot
+        val subjectLookup = snap.subjects.associateBy { it.id }
+
+        val fullResults = snap.testResults
+        val avgPct = if (fullResults.isNotEmpty()) fullResults.map { it.percentage }.average() else 0.0
+        val bestPct = fullResults.maxOfOrNull { it.percentage } ?: 0.0
+
+        val subjectBreakdown = fullResults
+            .groupBy { it.subjectId }
+            .map { (subjId, items) ->
+                val subjName = subjectLookup[subjId]?.nameEn ?: if (subjId == "full_length_exam") "Full Length Exams" else subjId
+                DriveSubjectProgressItem(
+                    subjectId = subjId,
+                    subjectName = subjName,
+                    attemptsCount = items.size,
+                    averagePercentage = items.map { it.percentage }.average(),
+                    bestPercentage = items.maxOf { it.percentage },
+                )
+            }
+            .sortedByDescending { it.attemptsCount }
+
+        val progressReport = DriveProgressReportPayload(
+            userId = snap.profile.id,
+            studentName = snap.profile.displayName,
+            email = snap.profile.email.orEmpty(),
+            role = snap.profile.role,
+            examName = snap.profile.examName,
+            examDateMillis = snap.profile.examDateMillis,
+            totalTestsAttempted = fullResults.size,
+            averagePercentage = avgPct,
+            bestPercentage = bestPct,
+            totalNotesCount = snap.notes.size,
+            personalNotesCount = snap.personalNotes.size,
+            bookmarksCount = snap.bookmarks.size,
+            revisionDiaryCount = snap.revisionDiary.size,
+            completedStudyTasks = snap.studyLogs.count { it.completed },
+            totalStudyTasks = snap.studyLogs.size,
+            subjectBreakdown = subjectBreakdown,
+            generatedAtMillis = System.currentTimeMillis(),
+        )
+
+        val examResults = fullResults.filter { it.subjectId == "full_length_exam" || it.testMode == "EXAM" }
+
+        return DriveStructuredFilesPayload(
+            fullBackupJson = json.encodeToString(snap),
+            studentProfileJson = prettyJson.encodeToString(snap.profile),
+            examResultsJson = prettyJson.encodeToString(examResults),
+            testHistoryJson = prettyJson.encodeToString(fullResults),
+            notesIndexJson = prettyJson.encodeToString(
+                mapOf(
+                    "notesCount" to snap.notes.size.toString(),
+                    "personalNotesCount" to snap.personalNotes.size.toString(),
+                    "revisionDiaryCount" to snap.revisionDiary.size.toString(),
+                    "notesJson" to json.encodeToString(snap.notes),
+                    "personalNotesJson" to json.encodeToString(snap.personalNotes),
+                    "revisionDiaryJson" to json.encodeToString(snap.revisionDiary),
+                )
+            ),
+            bookmarksJson = prettyJson.encodeToString(snap.bookmarks),
+            progressReportJson = prettyJson.encodeToString(progressReport),
+        )
+    }
+
     fun exportSnapshotJson(
         subjectsList: List<Subject>,
         topicsList: List<Topic>,
@@ -106,6 +192,7 @@ class LocalOfflineStore(
         personalNotesList: List<PersonalNote> = emptyList(),
         bookmarksList: List<BookmarkItem> = emptyList(),
         pdfAnnotationsList: List<CloudPdfAnnotationDoc> = emptyList(),
+        fullLengthExamsList: List<FullLengthExam> = emptyList(),
     ): String {
         val snap = OfflineVaultSnapshot(
             profile = OfflineUserProfileDto(
@@ -121,6 +208,9 @@ class LocalOfflineStore(
             subjects = subjectsList.map { OfflineSubjectDto(it.id, it.nameEn, it.nameHi, it.iconKey, it.colorHex, it.sortOrder) },
             topics = topicsList.map { OfflineTopicDto(it.id, it.subjectId, it.name, it.description) },
             subtopics = subtopicsList.map { OfflineSubtopicDto(it.id, it.subjectId, it.topicId, it.name, it.lastStudiedDate) },
+            fullLengthExams = fullLengthExamsList.map {
+                OfflineFullLengthExamDto(it.id, it.name, it.subtitle, it.updatedAt?.seconds ?: 0L)
+            },
             notes = notesList.map {
                 OfflineNoteDto(
                     id = it.id, subjectId = it.subjectId, topicId = it.topicId, subtopicId = it.subtopicId,
@@ -193,15 +283,72 @@ class LocalOfflineStore(
     }
 
     suspend fun importSnapshotJson(rawJson: String): OfflineVaultSnapshot = update {
-        mergeMissingDefaultSubjects(json.decodeFromString<OfflineVaultSnapshot>(rawJson)).copy(hasUserEdits = true)
+        val parsed = json.decodeFromString<OfflineVaultSnapshot>(rawJson)
+        mergeMissingDefaultSubjects(parsed).copy(hasUserEdits = false)
     }
 
-    suspend fun markSyncedToCloud() { update { it.copy(hasUserEdits = false) } }
+    suspend fun mergeDriveBackupJson(rawJson: String): OfflineVaultSnapshot = update { local ->
+        val remote = json.decodeFromString<OfflineVaultSnapshot>(rawJson)
+        mergeSnapshots(local, remote)
+    }
+
+    private fun mergeSnapshots(local: OfflineVaultSnapshot, remote: OfflineVaultSnapshot): OfflineVaultSnapshot {
+        fun <T> mergeById(
+            localItems: List<T>,
+            remoteItems: List<T>,
+            idOf: (T) -> String,
+            timestampOf: (T) -> Long = { 0L },
+        ): List<T> {
+            val map = LinkedHashMap<String, T>()
+            remoteItems.forEach { map[idOf(it)] = it }
+            localItems.forEach { l ->
+                val id = idOf(l)
+                val r = map[id]
+                if (r == null || timestampOf(l) >= timestampOf(r)) {
+                    map[id] = l
+                }
+            }
+            return map.values.toList()
+        }
+
+        val mergedProfile = local.profile.copy(
+            displayName = local.profile.displayName.takeIf { it.isNotBlank() && it != "Offline Learner" && it != "Learner" }
+                ?: remote.profile.displayName,
+            email = local.profile.email ?: remote.profile.email,
+            photoUrl = local.profile.photoUrl ?: remote.profile.photoUrl,
+            examName = local.profile.examName ?: remote.profile.examName,
+            examDateMillis = local.profile.examDateMillis ?: remote.profile.examDateMillis,
+        )
+
+        val merged = OfflineVaultSnapshot(
+            profile = mergedProfile,
+            subjects = mergeById(local.subjects, remote.subjects, { it.id }),
+            topics = mergeById(local.topics, remote.topics, { it.id }),
+            subtopics = mergeById(local.subtopics, remote.subtopics, { it.id }),
+            fullLengthExams = mergeById(local.fullLengthExams, remote.fullLengthExams, { it.id }, { it.updatedAtSeconds }),
+            notes = mergeById(local.notes, remote.notes, { it.id }, { it.updatedAtSeconds }),
+            videos = mergeById(local.videos, remote.videos, { it.id }, { it.createdAtSeconds }),
+            mcqs = mergeById(local.mcqs, remote.mcqs, { it.id }, { it.createdAtSeconds }),
+            testResults = mergeById(local.testResults, remote.testResults, { it.id }, { it.createdAtSeconds }),
+            studyLogs = mergeById(local.studyLogs, remote.studyLogs, { it.id }),
+            revisionDiary = mergeById(local.revisionDiary, remote.revisionDiary, { it.id }, { it.updatedAtSeconds }),
+            personalNotes = mergeById(local.personalNotes, remote.personalNotes, { it.id }, { it.updatedAtMillis }),
+            bookmarks = mergeById(local.bookmarks, remote.bookmarks, { it.id }, { it.createdAtMillis }),
+            pdfAnnotations = mergeById(local.pdfAnnotations, remote.pdfAnnotations, { it.noteId }, { it.updatedAtMillis }),
+            hasUserEdits = local.hasUserEdits,
+        )
+        return mergeMissingDefaultSubjects(merged)
+    }
+
+    suspend fun markSyncedToCloud() {
+        update { it.copy(hasUserEdits = false) }
+    }
 
     suspend fun updateProfileMeta(displayName: String, email: String?, photoUrl: String?, role: String) {
         update {
             it.copy(
                 profile = it.profile.copy(
+                    id = ownerId,
                     displayName = displayName.ifBlank { it.profile.displayName },
                     email = email ?: it.profile.email,
                     photoUrl = photoUrl ?: it.profile.photoUrl,
@@ -229,7 +376,7 @@ class LocalOfflineStore(
 
     suspend fun addSubject(nameEn: String, nameHi: String?, iconKey: String, colorHex: String, sortOrder: Long) {
         val dto = OfflineSubjectDto(
-            id = "subj_${StudyRepository.newValidId()}",
+            id = "subj_${StudyDateUtils.newValidId()}",
             nameEn = nameEn.trim().take(80),
             nameHi = nameHi?.trim()?.takeIf { it.isNotEmpty() }?.take(80),
             iconKey = iconKey.take(40),
@@ -241,7 +388,7 @@ class LocalOfflineStore(
 
     suspend fun addTopic(subjectId: String, name: String, description: String?) {
         val dto = OfflineTopicDto(
-            id = "topic_${StudyRepository.newValidId()}",
+            id = "topic_${StudyDateUtils.newValidId()}",
             subjectId = subjectId,
             name = name.trim().take(120),
             description = description?.trim()?.takeIf { it.isNotEmpty() }?.take(300),
@@ -255,7 +402,7 @@ class LocalOfflineStore(
 
     suspend fun addSubtopic(subjectId: String, topicId: String, name: String) {
         val dto = OfflineSubtopicDto(
-            id = "sub_${StudyRepository.newValidId()}",
+            id = "sub_${StudyDateUtils.newValidId()}",
             subjectId = subjectId,
             topicId = topicId,
             name = name.trim().take(120),
@@ -267,10 +414,25 @@ class LocalOfflineStore(
         update { it.copy(subtopics = it.subtopics.filterNot { s -> s.id == subtopicId }, hasUserEdits = true) }
     }
 
+    suspend fun addFullLengthExam(name: String, subtitle: String?): FullLengthExam {
+        val dto = OfflineFullLengthExamDto(
+            id = "fl_${StudyDateUtils.newValidId()}",
+            name = name.trim().take(120),
+            subtitle = subtitle?.trim()?.takeIf { it.isNotEmpty() }?.take(200),
+            updatedAtSeconds = nowSeconds(),
+        )
+        update { it.copy(fullLengthExams = it.fullLengthExams + dto, hasUserEdits = true) }
+        return dto.toModel(ownerId)
+    }
+
+    suspend fun deleteFullLengthExam(examId: String) {
+        update { it.copy(fullLengthExams = it.fullLengthExams.filterNot { e -> e.id == examId }, hasUserEdits = true) }
+    }
+
     suspend fun markSubtopicStudiedToday(subtopic: Subtopic, subjectName: String) {
-        val today = StudyRepository.todayKey()
+        val today = StudyDateUtils.todayKey()
         val logDto = OfflineStudyLogDto(
-            id = "log_${StudyRepository.newValidId()}", dateKey = today, entryType = "STUDIED",
+            id = "log_${StudyDateUtils.newValidId()}", dateKey = today, entryType = "STUDIED",
             title = subtopic.name, subjectName = subjectName, subtopicId = subtopic.id,
             completed = true, notes = "Marked as studied"
         )
@@ -318,9 +480,9 @@ class LocalOfflineStore(
     }
 
     suspend fun markNoteOpenedToday(note: StudyNote, subjectName: String) {
-        val today = StudyRepository.todayKey()
+        val today = StudyDateUtils.todayKey()
         val logDto = OfflineStudyLogDto(
-            id = "log_${StudyRepository.newValidId()}", dateKey = today, entryType = "STUDIED",
+            id = "log_${StudyDateUtils.newValidId()}", dateKey = today, entryType = "STUDIED",
             title = note.title, subjectName = subjectName, subtopicId = note.subtopicId,
             completed = true, notes = "Opened ${note.noteType}"
         )
@@ -339,7 +501,7 @@ class LocalOfflineStore(
 
     suspend fun addVideo(subjectId: String, topicId: String, subtopicId: String, title: String, youtubeUrl: String, channelOrNote: String?) {
         val dto = OfflineVideoDto(
-            id = "vid_${StudyRepository.newValidId()}", subjectId = subjectId, topicId = topicId, subtopicId = subtopicId,
+            id = "vid_${StudyDateUtils.newValidId()}", subjectId = subjectId, topicId = topicId, subtopicId = subtopicId,
             title = title.trim().take(150), youtubeUrl = youtubeUrl.trim().take(500),
             channelOrNote = channelOrNote?.trim()?.takeIf { it.isNotEmpty() }?.take(150),
             createdAtSeconds = nowSeconds(),
@@ -348,9 +510,9 @@ class LocalOfflineStore(
     }
 
     suspend fun markVideoWatchedToday(video: VideoLink, subjectName: String) {
-        val today = StudyRepository.todayKey()
+        val today = StudyDateUtils.todayKey()
         val logDto = OfflineStudyLogDto(
-            id = "log_${StudyRepository.newValidId()}", dateKey = today, entryType = "STUDIED",
+            id = "log_${StudyDateUtils.newValidId()}", dateKey = today, entryType = "STUDIED",
             title = video.title, subjectName = subjectName, subtopicId = video.subtopicId,
             completed = true, notes = "Watched YouTube video"
         )
@@ -378,7 +540,7 @@ class LocalOfflineStore(
     ) {
         val cleanOptions = options.map { it.trim() }.filter { it.isNotEmpty() }.take(6)
         val dto = OfflineMcqDto(
-            id = "mcq_${StudyRepository.newValidId()}", subjectId = subjectId, topicId = topicId, subtopicId = subtopicId,
+            id = "mcq_${StudyDateUtils.newValidId()}", subjectId = subjectId, topicId = topicId, subtopicId = subtopicId,
             question = question.trim().take(500), options = cleanOptions,
             correctIndex = correctIndex.coerceIn(0, (cleanOptions.lastIndex).coerceAtLeast(0)).toLong(),
             explanation = explanation?.trim()?.takeIf { it.isNotEmpty() }?.take(500),
@@ -409,12 +571,12 @@ class LocalOfflineStore(
         durationSeconds: Long = 0L,
         testMode: String = "EXAM",
         breakdownJson: String? = null,
-        resultId: String = "res_${StudyRepository.newValidId()}",
+        resultId: String = "res_${StudyDateUtils.newValidId()}",
     ): TestResult {
         val safeObtained = scoreObtained.coerceAtLeast(0.0)
         val safeTotal = totalMarks.coerceAtLeast(0.0)
         val pct = if (safeTotal > 0.0) ((safeObtained / safeTotal) * 100.0).coerceIn(0.0, 100.0) else 0.0
-        val today = StudyRepository.todayKey()
+        val today = StudyDateUtils.todayKey()
         val dto = OfflineTestResultDto(
             id = resultId, subjectId = subjectId, topicId = topicId, subtopicId = subtopicId, noteId = noteId,
             testTitle = testTitle.trim().ifBlank { "Mock Test" }.take(150),
@@ -425,7 +587,7 @@ class LocalOfflineStore(
             summaryText = summaryText, takenDate = today, createdAtSeconds = nowSeconds(),
         )
         val logDto = OfflineStudyLogDto(
-            id = "log_${StudyRepository.newValidId()}", dateKey = today, entryType = "STUDIED",
+            id = "log_${StudyDateUtils.newValidId()}", dateKey = today, entryType = "STUDIED",
             title = "$testTitle (${scoreObtained.toInt()}/${totalMarks.toInt()})",
             subjectName = subjectName, subtopicId = subtopicId, completed = true, notes = summaryText
         )
@@ -441,7 +603,7 @@ class LocalOfflineStore(
 
     suspend fun addStudyLog(dateKey: String, entryType: String, title: String, subjectName: String?, notes: String?) {
         val dto = OfflineStudyLogDto(
-            id = "log_${StudyRepository.newValidId()}", dateKey = dateKey,
+            id = "log_${StudyDateUtils.newValidId()}", dateKey = dateKey,
             entryType = if (entryType == "STUDIED") "STUDIED" else "PLANNED",
             title = title.trim().take(150),
             subjectName = subjectName?.trim()?.takeIf { it.isNotEmpty() }?.take(80),
@@ -475,7 +637,7 @@ class LocalOfflineStore(
             val dateKey = fmt.format(cal.time)
             val subject = subjects[dayOffset % subjects.size]
             newLogs += OfflineStudyLogDto(
-                id = "plan_${dateKey}_${subject.id}_${StudyRepository.newValidId().take(6)}",
+                id = "plan_${dateKey}_${subject.id}_${StudyDateUtils.newValidId().take(6)}",
                 dateKey = dateKey, entryType = "PLANNED",
                 title = "${subject.nameEn} Revision & Mock Test", subjectName = subject.nameEn,
                 completed = false, notes = "Auto-scheduled for upcoming exam"
@@ -487,7 +649,7 @@ class LocalOfflineStore(
 
     suspend fun addRevisionDiaryEntry(
         dateKey: String, title: String, subjectName: String?, sourceName: String, content: String,
-        pdfTitle: String? = null, pdfLocalFileName: String? = null, entryId: String = "diary_${StudyRepository.newValidId()}",
+        pdfTitle: String? = null, pdfLocalFileName: String? = null, entryId: String = "diary_${StudyDateUtils.newValidId()}",
     ) {
         val dto = OfflineRevisionDiaryDto(
             id = entryId, dateKey = dateKey.take(20), title = title.trim().take(150),
@@ -529,7 +691,7 @@ class LocalOfflineStore(
 
     suspend fun upsertPersonalNote(note: PersonalNote) {
         val dto = OfflinePersonalNoteDto(
-            id = note.id.ifBlank { "pnote_${StudyRepository.newValidId()}" },
+            id = note.id.ifBlank { "pnote_${StudyDateUtils.newValidId()}" },
             subjectId = note.subjectId,
             subjectName = note.subjectName,
             topicName = note.topicName,
@@ -552,7 +714,7 @@ class LocalOfflineStore(
 
     suspend fun upsertBookmark(item: BookmarkItem) {
         val dto = OfflineBookmarkDto(
-            id = item.id.ifBlank { "bmk_${StudyRepository.newValidId()}" },
+            id = item.id.ifBlank { "bmk_${StudyDateUtils.newValidId()}" },
             bookmarkType = item.bookmarkType,
             title = item.title.trim().take(200),
             subtitle = item.subtitle.take(300),
@@ -587,8 +749,13 @@ class LocalOfflineStore(
     }
 
     suspend fun adoptOfflineSnapshotIfEmpty(offlineSnap: OfflineVaultSnapshot) {
-        if (!snapshot.hasUserEdits && offlineSnap.hasUserEdits) {
-            update { mergeMissingDefaultSubjects(offlineSnap).copy(hasUserEdits = true) }
+        if (!offlineSnap.hasUserEdits) return
+        update { current ->
+            if (!current.hasUserEdits) {
+                mergeSnapshots(offlineSnap, current).copy(hasUserEdits = true)
+            } else {
+                mergeSnapshots(current, offlineSnap).copy(hasUserEdits = true)
+            }
         }
     }
 
@@ -607,6 +774,7 @@ class LocalOfflineStore(
         _subjects.value = snapshot.subjects.map { it.toModel(ownerId) }.sortedBy { it.sortOrder }
         _topics.value = snapshot.topics.map { it.toModel(ownerId) }.sortedBy { it.name.lowercase() }
         _subtopics.value = snapshot.subtopics.map { it.toModel(ownerId) }.sortedBy { it.name.lowercase() }
+        _fullLengthExams.value = snapshot.fullLengthExams.map { it.toModel(ownerId) }
         _notes.value = snapshot.notes.map { it.toModel(ownerId) }.sortedByDescending { it.updatedAt?.seconds ?: 0L }
         _videos.value = snapshot.videos.map { it.toModel(ownerId) }.sortedByDescending { it.createdAt?.seconds ?: 0L }
         _mcqs.value = snapshot.mcqs.map { it.toModel(ownerId) }.sortedBy { it.createdAt?.seconds ?: 0L }
@@ -717,7 +885,7 @@ class LocalOfflineStore(
         )
         val sampleDiary = OfflineRevisionDiaryDto(
             id = "diary_sample_1",
-            dateKey = StudyRepository.todayKey(),
+            dateKey = StudyDateUtils.todayKey(),
             title = "सिंधु घाटी एवं मौलिक अधिकार शॉर्ट नोट्स",
             subjectName = "History / Polity",
             sourceName = "NCERT Class 12 & Laxmikant Ch-7",

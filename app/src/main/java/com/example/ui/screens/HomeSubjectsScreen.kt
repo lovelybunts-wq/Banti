@@ -34,12 +34,18 @@ import androidx.compose.material.icons.rounded.Book
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.Bookmarks
+import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.CloudQueue
+import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -68,6 +74,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.data.local.StudyDateUtils
 import com.example.data.model.BookmarkItem
 import com.example.data.model.BookmarkType
 import com.example.data.model.FullLengthExam
@@ -81,7 +88,7 @@ import com.example.data.model.Subject
 import com.example.data.model.Topic
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
-import com.example.data.remote.StudyRepository
+import com.example.ui.DriveSyncUiState
 import com.example.ui.components.LearnTalentBrandHeader
 import com.example.ui.components.StudentAvatar
 import com.example.ui.components.Tactile3DBadge
@@ -104,6 +111,9 @@ fun HomeSubjectsScreen(
     displayName: String,
     photoUrl: String?,
     isAdminUser: Boolean,
+    isOfflineAccount: Boolean,
+    driveSyncState: DriveSyncUiState,
+    onSignInOrSyncNow: () -> Unit,
     onToggleLightDark: () -> Unit,
     onSubjectClick: (Subject) -> Unit,
     onOpenFullLengthTests: () -> Unit,
@@ -138,7 +148,7 @@ fun HomeSubjectsScreen(
             ?: "Student"
     }
 
-    val yesterdayKey = remember { StudyRepository.yesterdayKey() }
+    val yesterdayKey = remember { StudyDateUtils.yesterdayKey() }
     val yesterdayLogs = remember(logs, yesterdayKey) {
         logs.filter { it.dateKey == yesterdayKey && it.entryType == "STUDIED" }
     }
@@ -246,6 +256,81 @@ fun HomeSubjectsScreen(
                                                 Text("सभी छात्रों के लिए PDF/HTML टेस्ट अपलोड, छात्र रिजल्ट व अनुरोध देखें", style = MaterialTheme.typography.bodySmall, color = theme.onSurfaceVariant)
                                             }
                                             Tactile3DBadge(text = "ADMIN", color = theme.tertiary)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Google Drive Sync / Offline Mode Status Card
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                val (syncColor, syncIcon, syncTitle, syncSubtitle, actionLabel) = when (driveSyncState) {
+                                    is DriveSyncUiState.OfflineAccount -> SyncBannerVisual(
+                                        theme.secondary, Icons.Rounded.CloudOff,
+                                        "Offline Mode Active (ऑफलाइन मोड)",
+                                        "सारा डेटा फोन में सेव है। बैकअप के लिए Gmail से लॉगिन करें।",
+                                        "Gmail लॉगिन"
+                                    )
+                                    is DriveSyncUiState.Syncing -> SyncBannerVisual(
+                                        theme.primary, Icons.Rounded.CloudSync,
+                                        "Google Drive Syncing...",
+                                        driveSyncState.message,
+                                        "Syncing"
+                                    )
+                                    is DriveSyncUiState.Synced -> SyncBannerVisual(
+                                        theme.success, Icons.Rounded.CloudDone,
+                                        "Google Drive Backed Up",
+                                        driveSyncState.detail,
+                                        "Sync Now"
+                                    )
+                                    is DriveSyncUiState.PendingOffline -> SyncBannerVisual(
+                                        theme.tertiary, Icons.Rounded.CloudQueue,
+                                        "Pending Cloud Sync",
+                                        driveSyncState.message,
+                                        "Sync Now"
+                                    )
+                                    is DriveSyncUiState.NeedAuth -> SyncBannerVisual(
+                                        theme.tertiary, Icons.Rounded.Sync,
+                                        "Authorize Google Drive",
+                                        driveSyncState.message,
+                                        "Authorize"
+                                    )
+                                    is DriveSyncUiState.Error -> SyncBannerVisual(
+                                        theme.error, Icons.Rounded.ErrorOutline,
+                                        "Drive Sync Paused (Offline Safe)",
+                                        driveSyncState.message,
+                                        "Retry Sync"
+                                    )
+                                }
+                                Tactile3DCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    accentColor = syncColor,
+                                    lipDepth = 3.dp,
+                                    testTag = "home_drive_sync_card",
+                                    contentPadding = PaddingValues(12.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            TactileIconOrb(icon = syncIcon, tint = syncColor, size = 38.dp)
+                                            Spacer(Modifier.width(10.dp))
+                                            Column {
+                                                Text(syncTitle, style = MaterialTheme.typography.titleSmall, color = syncColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                Text(syncSubtitle, style = MaterialTheme.typography.labelSmall, color = theme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                            }
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        Button(
+                                            onClick = onSignInOrSyncNow,
+                                            enabled = driveSyncState !is DriveSyncUiState.Syncing,
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = syncColor, contentColor = theme.onPrimary),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier.testTag("home_drive_sync_action_btn")
+                                        ) {
+                                            Text(actionLabel, style = MaterialTheme.typography.labelMedium)
                                         }
                                     }
                                 }
@@ -508,3 +593,11 @@ private fun AddSubjectDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
+
+private data class SyncBannerVisual(
+    val color: androidx.compose.ui.graphics.Color,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val title: String,
+    val subtitle: String,
+    val actionLabel: String,
+)

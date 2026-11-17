@@ -56,37 +56,35 @@ jobs:
             cp .env.example .env
           fi
 
-      - name: Restore and verify google-services.json
-        env:
-          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
-        run: |
-          if [ ! -f app/google-services.json ] && [ -n "$GOOGLE_SERVICES_JSON" ]; then
-            if printf '%s' "$GOOGLE_SERVICES_JSON" | grep -q '"project_info"'; then
-              printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
-            else
-              printf '%s' "$GOOGLE_SERVICES_JSON" | tr -d '[:space:]' | base64 -d > app/google-services.json
-            fi
-          fi
-          if [ ! -s app/google-services.json ]; then
-            echo "::error::app/google-services.json is missing! Add repository secret GOOGLE_SERVICES_JSON in GitHub Settings -> Secrets and variables -> Actions (paste contents of app/google-services.json from AI Studio)."
-            exit 1
-          fi
-          python3 -c 'import json; json.load(open("app/google-services.json"))' || {
-            echo "::error::app/google-services.json is not valid JSON. Please re-paste raw JSON or clean Base64 into GitHub Secret GOOGLE_SERVICES_JSON."
-            exit 1
-          }
-
       - name: Build Debug APK
         run: gradle :app:assembleDebug --no-daemon --console=plain
 
-      - name: Prepare APK file
+      - name: Prepare Debug APK file
         run: cp app/build/outputs/apk/debug/app-debug.apk Learn-Talent.apk
+
+      - name: Build Optional Release APK (if keystore secrets are configured)
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
+            printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > my-upload-key.jks
+            gradle :app:assembleRelease --no-daemon --console=plain
+            cp app/build/outputs/apk/release/app-release.apk Learn-Talent-Release.apk
+            echo "HAS_RELEASE_APK=true" >> "$GITHUB_ENV"
+          else
+            echo "Release keystore secrets not configured; Debug APK built cleanly."
+          fi
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Learn-Talent-APK
-          path: Learn-Talent.apk
+          path: |
+            Learn-Talent.apk
+            Learn-Talent-Release.apk
+          if-no-files-found: ignore
           retention-days: 30
 
       - name: Publish Direct APK to GitHub Releases
@@ -94,11 +92,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          FILES="Learn-Talent.apk"
+          if [ "${HAS_RELEASE_APK:-false}" = "true" ] && [ -f Learn-Talent-Release.apk ]; then
+            FILES="Learn-Talent.apk Learn-Talent-Release.apk"
+          fi
           if gh release view latest-apk >/dev/null 2>&1; then
-            gh release upload latest-apk Learn-Talent.apk --clobber
+            gh release upload latest-apk $FILES --clobber
           else
-            gh release create latest-apk Learn-Talent.apk \
+            gh release create latest-apk $FILES \
               --title "Learn Talent APK (Latest)" \
-              --notes "Latest auto-built Android APK for Learn Talent." \
+              --notes "Latest auto-built Android APK for Learn Talent (Offline-First + Google Drive Sync)." \
               --latest
           fi

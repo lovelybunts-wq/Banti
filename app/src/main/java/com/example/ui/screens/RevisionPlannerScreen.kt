@@ -72,12 +72,12 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.R
 import com.example.data.local.LocalAppSettings
+import com.example.data.local.StudyDateUtils
 import com.example.data.model.RevisionDiaryEntry
 import com.example.data.model.StudyLog
 import com.example.data.model.Subject
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
-import com.example.data.remote.StudyRepository
 import com.example.notifications.RevisionReminderReceiver
 import com.example.notifications.RevisionReminderScheduler
 import com.example.ui.components.LearnTalentLogo
@@ -125,9 +125,9 @@ fun RevisionPlannerScreen(
     val subjects = (subjectsState as? UiState.Success)?.data ?: emptyList()
     val profile = (profileState as? UiState.Success)?.data
 
-    val todayKey = remember { StudyRepository.todayKey() }
-    val yesterdayKey = remember { StudyRepository.yesterdayKey() }
-    val tomorrowKey = remember { StudyRepository.tomorrowKey() }
+    val todayKey = remember { StudyDateUtils.todayKey() }
+    val yesterdayKey = remember { StudyDateUtils.yesterdayKey() }
+    val tomorrowKey = remember { StudyDateUtils.tomorrowKey() }
 
     var selectedPlanDateKey by remember { mutableStateOf(todayKey) }
     var showAddPlanDialog by remember { mutableStateOf(false) }

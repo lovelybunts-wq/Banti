@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CloudUpload
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PublishedWithChanges
@@ -58,7 +59,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.example.data.model.NoteType
 import com.example.data.model.StudentSummary
@@ -84,6 +87,8 @@ fun AdminPanelScreen(
     requests: List<WhatsAppRequestRecord>,
     uploadProgress: Float?,
     currentWhatsAppDigits: String,
+    publishedCatalogLink: String?,
+    onPublishCatalogToDrive: () -> Unit,
     onUploadSharedContent: (
         subjectId: String, topicId: String, subtopicId: String, folderName: String,
         title: String, noteType: NoteType, isMockTest: Boolean, fileUri: Uri?, published: Boolean, existingNote: StudyNote?
@@ -146,6 +151,8 @@ fun AdminPanelScreen(
                     1 -> AdminUploadCatalogTab(
                         subjects = subjects, allTopics = allTopics, allSubtopics = allSubtopics,
                         sharedContent = sharedContent, uploadProgress = uploadProgress,
+                        publishedCatalogLink = publishedCatalogLink,
+                        onPublishCatalogToDrive = onPublishCatalogToDrive,
                         onUploadSharedContent = onUploadSharedContent, onTogglePublished = onTogglePublished,
                         onDeleteSharedContent = onDeleteSharedContent, onPreviewSharedNote = onPreviewSharedNote,
                         onAddSharedTopic = onAddSharedTopic, onAddSharedSubtopic = onAddSharedSubtopic
@@ -161,15 +168,19 @@ fun AdminPanelScreen(
     }
 }
 
+@Suppress("DEPRECATION")
 @Composable
 private fun AdminUploadCatalogTab(
     subjects: List<Subject>, allTopics: List<Topic>, allSubtopics: List<Subtopic>,
     sharedContent: List<StudyNote>, uploadProgress: Float?,
+    publishedCatalogLink: String?,
+    onPublishCatalogToDrive: () -> Unit,
     onUploadSharedContent: (String, String, String, String, String, NoteType, Boolean, Uri?, Boolean, StudyNote?) -> Unit,
     onTogglePublished: (StudyNote) -> Unit, onDeleteSharedContent: (StudyNote) -> Unit, onPreviewSharedNote: (StudyNote) -> Unit,
     onAddSharedTopic: (String, String, String?) -> Unit, onAddSharedSubtopic: (String, String, String) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
+    val clipboard = LocalClipboardManager.current
     var selectedSubjectId by remember(subjects.size) { mutableStateOf(subjects.firstOrNull()?.id ?: "") }
     val topicsForSubj = remember(allTopics, selectedSubjectId) { allTopics.filter { it.subjectId == selectedSubjectId } }
     var selectedTopicId by remember(topicsForSubj) { mutableStateOf(topicsForSubj.firstOrNull()?.id ?: "") }
@@ -204,6 +215,43 @@ private fun AdminUploadCatalogTab(
     }
 
     LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Tactile3DCard(accentColor = theme.primary, modifier = Modifier.fillMaxWidth()) {
+                Text("Publish Shared Catalog to Google Drive", style = MaterialTheme.typography.titleMedium, color = theme.primary)
+                Text(
+                    "अपने Google Drive (LEARN TALENT/Shared Catalog/) में shared_catalog.json पब्लिश करें ताकि छात्र इसे Settings से इम्पोर्ट कर सकें।",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = theme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = onPublishCatalogToDrive,
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = theme.onPrimary),
+                        modifier = Modifier.weight(1f).testTag("admin_publish_drive_catalog_btn")
+                    ) {
+                        Icon(Icons.Rounded.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Publish to Drive")
+                    }
+                    if (!publishedCatalogLink.isNullOrBlank()) {
+                        OutlinedButton(
+                            onClick = { clipboard.setText(AnnotatedString(publishedCatalogLink)) },
+                            modifier = Modifier.testTag("admin_copy_catalog_link_btn")
+                        ) {
+                            Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Copy Link")
+                        }
+                    }
+                }
+                if (!publishedCatalogLink.isNullOrBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Published Link: $publishedCatalogLink", style = MaterialTheme.typography.labelSmall, color = theme.success)
+                }
+            }
+        }
+
         item {
             Tactile3DCard(accentColor = theme.tertiary, modifier = Modifier.fillMaxWidth()) {
                 Text("Upload Shared Material (1 Upload → All Students)", style = MaterialTheme.typography.titleMedium, color = theme.tertiary)

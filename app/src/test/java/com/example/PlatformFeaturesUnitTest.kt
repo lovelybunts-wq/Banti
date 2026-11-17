@@ -3,9 +3,12 @@ package com.example
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.auth.GoogleAuthHelper
+import com.example.data.local.LocalAdminCatalogStore
+import com.example.data.local.LocalAppSettings
 import com.example.data.local.LocalFileStorage
 import com.example.data.local.LocalOfflineStore
 import com.example.data.local.PdfExportHelper
+import com.example.data.remote.GoogleDriveBackupManager
 import com.example.data.model.BookmarkItem
 import com.example.data.model.BookmarkType
 import com.example.data.model.DefaultSubjectsSeed
@@ -282,10 +285,100 @@ class PlatformFeaturesUnitTest {
     }
 
     @Test
-    fun `google auth helper resolves default_web_client_id from generated resources`() {
+    fun `google auth helper resolves admin vs student role and session from settings`() {
+        assertEquals("admin", GoogleAuthHelper.resolveRole("lovely.bunts@gmail.com"))
+        assertEquals("admin", GoogleAuthHelper.resolveRole("LOVELY.BUNTS@GMAIL.COM"))
+        assertEquals("student", GoogleAuthHelper.resolveRole("student@gmail.com"))
+        assertFalse(GoogleAuthHelper.isAdminEmail(null))
+
+        val offline = GoogleAuthHelper.sessionFromSettings(LocalAppSettings(offlineModeAccepted = true))
+        assertNotNull(offline)
+        assertTrue(offline!!.isOffline)
+
+        val gmail = GoogleAuthHelper.sessionFromSettings(
+            LocalAppSettings(
+                driveUserId = "sub_123",
+                driveUserEmail = "learner@gmail.com",
+                driveUserName = "Aarav"
+            )
+        )
+        assertNotNull(gmail)
+        assertFalse(gmail!!.isOffline)
+        assertEquals("learner@gmail.com", gmail.email)
+        assertEquals("Aarav", gmail.displayName)
+    }
+
+    @Test
+    fun `drive backup manager defines 6 student subfolders and resolves public share links`() {
+        val subfolders = GoogleDriveBackupManager.ALL_STUDENT_SUBFOLDERS
+        assertEquals(6, subfolders.size)
+        assertTrue(
+            subfolders.containsAll(
+                listOf(
+                    "Student Profile",
+                    "Exam Results",
+                    "Test History",
+                    "Notes",
+                    "Bookmarks",
+                    "Progress Reports",
+                )
+            )
+        )
+        assertEquals(
+            "https://drive.google.com/uc?export=download&id=1AbCdEfGhIjKlMnOpQrSt",
+            GoogleDriveBackupManager.resolvePublicDriveDownloadUrl("https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrSt/view?usp=sharing")
+        )
+        assertEquals(
+            "https://drive.google.com/uc?export=download&id=1AbCdEfGhIjKlMnOpQrSt",
+            GoogleDriveBackupManager.resolvePublicDriveDownloadUrl("1AbCdEfGhIjKlMnOpQrSt")
+        )
+    }
+
+    @Test
+    fun `offline store structured drive payload and backup merge preserve local and remote data`() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val clientId = GoogleAuthHelper.resolveWebClientId(context)
-        assertNotNull(clientId)
-        assertTrue(clientId!!.contains(".apps.googleusercontent.com"))
+        val remoteStore = LocalOfflineStore(context, ownerId = "merge_remote_user")
+        remoteStore.addFullLengthExam("MPPSC Prelims 2026", "GS + CSAT")
+        remoteStore.addStudyLog("2026-11-16", "STUDIED", "Polity Articles", "Polity", null)
+        val remoteJson = remoteStore.exportCurrentSnapshotJson()
+
+        val localStore = LocalOfflineStore(context, ownerId = "merge_local_user")
+        localStore.addFullLengthExam("SSC CGL Tier 1", "Full Mock")
+        localStore.mergeDriveBackupJson(remoteJson)
+
+        val exams = localStore.fullLengthExams.value
+        assertTrue(exams.any { it.name == "MPPSC Prelims 2026" })
+        assertTrue(exams.any { it.name == "SSC CGL Tier 1" })
+        assertTrue(localStore.studyLogs.value.any { it.title == "Polity Articles" })
+
+        val structured = localStore.buildStructuredDrivePayload()
+        assertTrue(structured.studentProfileJson.contains("Offline Learner") || structured.studentProfileJson.contains("student"))
+        assertTrue(structured.progressReportJson.contains("subjectBreakdown"))
+        assertTrue(structured.fullBackupJson.contains("MPPSC Prelims 2026"))
+    }
+
+    @Test
+    fun `admin catalog store exports only published items and imports clean shared bundle`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val adminStore = LocalAdminCatalogStore(context)
+        adminStore.upsertSharedContent(
+            StudyNote(
+                id = "pub_note_1", subjectId = "subj_history", topicId = "t1", subtopicId = "st1",
+                title = "Published History PDF", noteType = "PDF", published = true, isShared = true
+            )
+        )
+        adminStore.upsertSharedContent(
+            StudyNote(
+                id = "draft_note_1", subjectId = "subj_history", topicId = "t1", subtopicId = "st1",
+                title = "Draft Secret PDF", noteType = "PDF", published = false, isShared = true
+            )
+        )
+        val exported = adminStore.exportPublishedCatalogJson()
+        assertTrue(exported.contains("Published History PDF"))
+        assertFalse(exported.contains("Draft Secret PDF"))
+
+        adminStore.importPublishedCatalogJson(exported)
+        assertTrue(adminStore.contents.value.any { it.id == "pub_note_1" })
+        assertFalse(adminStore.contents.value.any { it.id == "draft_note_1" })
     }
 }

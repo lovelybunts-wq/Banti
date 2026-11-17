@@ -1,15 +1,22 @@
 package com.example.ui
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.auth.GoogleAuthHelper
+import com.example.auth.GoogleSessionUser
+import com.example.data.local.LocalAdminCatalogStore
 import com.example.data.local.LocalAppSettings
 import com.example.data.local.LocalFileStorage
 import com.example.data.local.LocalOfflineStore
 import com.example.data.local.PdfExportHelper
 import com.example.data.local.SharedDownloadRecord
+import com.example.data.local.StudyDateUtils
 import com.example.data.local.UserPreferencesManager
 import com.example.data.model.BookmarkItem
 import com.example.data.model.BookmarkType
@@ -36,11 +43,9 @@ import com.example.data.model.UiState
 import com.example.data.model.UserProfile
 import com.example.data.model.VideoLink
 import com.example.data.model.WhatsAppRequestRecord
-import com.example.data.remote.CloudStorageService
-import com.example.data.remote.SharedCatalogRepository
-import com.example.data.remote.StudyRepository
+import com.example.data.remote.DriveAuthOutcome
+import com.example.data.remote.GoogleDriveBackupManager
 import com.example.ui.theme.StudyThemeOption
-import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,6 +55,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -59,24 +65,37 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
+sealed interface DriveSyncUiState {
+    data object OfflineAccount : DriveSyncUiState
+    data class Synced(val lastSyncedMillis: Long, val detail: String = "Google Drive Synced") : DriveSyncUiState
+    data class Syncing(val message: String = "Syncing to Google Drive...") : DriveSyncUiState
+    data class PendingOffline(val message: String = "Offline edits pending sync") : DriveSyncUiState
+    data class NeedAuth(val message: String = "Sign in / authorize Drive to sync") : DriveSyncUiState
+    data class Error(val message: String) : DriveSyncUiState
+}
+
 class MainViewModel(
     private val appContext: Context,
-    private val repository: StudyRepository,
-    private val sharedRepo: SharedCatalogRepository,
-    private val cloudStorage: CloudStorageService,
     private val offlineStore: LocalOfflineStore,
+    private val adminCatalogStore: LocalAdminCatalogStore,
+    private val driveManager: GoogleDriveBackupManager,
     private val fileStorage: LocalFileStorage,
     private val prefs: UserPreferencesManager,
-    val firebaseUid: String,
-    val initialDisplayName: String,
-    val signedInEmail: String? = null,
-    val initialPhotoUrl: String? = null,
+    val sessionUser: GoogleSessionUser,
+    initialDriveToken: String? = null,
 ) : ViewModel() {
 
-    val storageOwnerId: String = firebaseUid
-    val isAdminUser: Boolean = signedInEmail.equals(UserPreferencesManager.ADMIN_EMAIL, ignoreCase = true)
+    val storageOwnerId: String = sessionUser.uid
+    val isOfflineAccount: Boolean = sessionUser.isOffline
+    val signedInEmail: String? = sessionUser.email.takeIf { it.isNotBlank() }
+    val initialDisplayName: String = sessionUser.displayName
+    val initialPhotoUrl: String? = sessionUser.photoUrl
+    val isAdminUser: Boolean = !isOfflineAccount && GoogleAuthHelper.isAdminEmail(signedInEmail)
 
     private val jsonCodec = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    private var cachedDriveToken: String? = initialDriveToken
+    private var pendingActionAfterConsent: String = "SYNC" // "SYNC" | "RESTORE" | "PUBLISH_CATALOG"
 
     private val _toastEvents = MutableSharedFlow<String>(extraBufferCapacity = 12)
     val toastEvents = _toastEvents.asSharedFlow()
@@ -96,27 +115,38 @@ class MainViewModel(
     private val _recentActivities = MutableStateFlow(fileStorage.loadRecentActivities(storageOwnerId))
     val recentActivities: StateFlow<List<RecentActivityItem>> = _recentActivities.asStateFlow()
 
+    private val _driveSyncState = MutableStateFlow<DriveSyncUiState>(
+        if (isOfflineAccount) DriveSyncUiState.OfflineAccount else DriveSyncUiState.PendingOffline("Ready to sync")
+    )
+    val driveSyncState: StateFlow<DriveSyncUiState> = _driveSyncState.asStateFlow()
+
+    private val _pendingConsentSender = MutableStateFlow<IntentSender?>(null)
+    val pendingConsentSender: StateFlow<IntentSender?> = _pendingConsentSender.asStateFlow()
+
+    private val _publishedCatalogLink = MutableStateFlow<String?>(null)
+    val publishedCatalogLink: StateFlow<String?> = _publishedCatalogLink.asStateFlow()
+
     val localSettings: StateFlow<LocalAppSettings> = prefs.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), LocalAppSettings())
 
     val profileState: StateFlow<UiState<UserProfile?>> =
-        repository.observeProfile(firebaseUid).toUiStateFlow("observeProfile")
+        offlineStore.profile.toUiStateFlow("observeProfile")
 
-    private val sharedSubjectsFlow = sharedRepo.observeSharedSubjects(isAdminUser)
-    private val sharedTopicsFlow = sharedRepo.observeSharedTopics(isAdminUser)
-    private val sharedSubtopicsFlow = sharedRepo.observeSharedSubtopics(isAdminUser)
-    private val sharedContentsFlow = sharedRepo.observeSharedContent(isAdminUser)
-    private val sharedVideosFlow = sharedRepo.observeSharedVideos(isAdminUser)
-    private val sharedMcqsFlow = sharedRepo.observeSharedMcqs(isAdminUser)
-    private val sharedFullLengthExamsFlow = sharedRepo.observeSharedFullLengthExams(isAdminUser)
+    private val sharedSubjectsFlow = adminCatalogStore.subjects
+    private val sharedTopicsFlow = adminCatalogStore.topics
+    private val sharedSubtopicsFlow = adminCatalogStore.subtopics
+    private val sharedContentsFlow = adminCatalogStore.contents
+    private val sharedVideosFlow = adminCatalogStore.videos
+    private val sharedMcqsFlow = adminCatalogStore.mcqs
+    private val sharedFullLengthExamsFlow = adminCatalogStore.fullLengthExams
 
-    private val personalSubjectsFlow = repository.observeSubjects(firebaseUid)
-    private val personalTopicsFlow = repository.observeTopics(firebaseUid)
-    private val personalSubtopicsFlow = repository.observeSubtopics(firebaseUid)
-    private val personalNotesFlow = repository.observeNotes(firebaseUid)
-    private val personalVideosFlow = repository.observeVideos(firebaseUid)
-    private val personalMcqsFlow = repository.observeMcqs(firebaseUid)
-    private val personalFullLengthExamsFlow = repository.observeFullLengthExams(firebaseUid)
+    private val personalSubjectsFlow = offlineStore.subjects
+    private val personalTopicsFlow = offlineStore.topics
+    private val personalSubtopicsFlow = offlineStore.subtopics
+    private val personalNotesFlow = offlineStore.notes
+    private val personalVideosFlow = offlineStore.videos
+    private val personalMcqsFlow = offlineStore.mcqs
+    private val personalFullLengthExamsFlow = offlineStore.fullLengthExams
 
     val subjectsState: StateFlow<UiState<List<Subject>>> =
         combine(personalSubjectsFlow, sharedSubjectsFlow) { p, s ->
@@ -158,68 +188,99 @@ class MainViewModel(
         }.toUiStateFlow("fullLengthExams")
 
     val testResultsState: StateFlow<UiState<List<TestResult>>> =
-        repository.observeTestResults(firebaseUid).toUiStateFlow("testResults")
+        offlineStore.testResults.toUiStateFlow("testResults")
 
     val studyLogsState: StateFlow<UiState<List<StudyLog>>> =
-        repository.observeStudyLogs(firebaseUid).toUiStateFlow("studyLogs")
+        offlineStore.studyLogs.toUiStateFlow("studyLogs")
 
     val revisionDiaryState: StateFlow<UiState<List<RevisionDiaryEntry>>> =
-        repository.observeRevisionDiary(firebaseUid).toUiStateFlow("revisionDiary")
+        offlineStore.revisionDiary.toUiStateFlow("revisionDiary")
 
     val personalNotesState: StateFlow<UiState<List<PersonalNote>>> =
-        repository.observePersonalNotes(firebaseUid).toUiStateFlow("personalNotes")
+        offlineStore.personalNotes.toUiStateFlow("personalNotes")
 
     val bookmarksState: StateFlow<UiState<List<BookmarkItem>>> =
-        repository.observeBookmarks(firebaseUid).toUiStateFlow("bookmarks")
+        offlineStore.bookmarks.toUiStateFlow("bookmarks")
 
     val pdfAnnotationsState: StateFlow<List<CloudPdfAnnotationDoc>> =
-        repository.observePdfAnnotations(firebaseUid)
+        offlineStore.pdfAnnotations
             .catch { emit(emptyList()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
-    // Admin-only streams (empty for students)
+    // Admin-only streams
     val adminSharedContent: StateFlow<List<StudyNote>> =
-        (if (isAdminUser) sharedRepo.observeSharedContent(true) else flowOf(emptyList()))
+        (if (isAdminUser) sharedContentsFlow else flowOf(emptyList()))
             .catch { emit(emptyList()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
     val adminSharedTopics: StateFlow<List<Topic>> =
-        (if (isAdminUser) sharedRepo.observeSharedTopics(true) else flowOf(emptyList()))
+        (if (isAdminUser) sharedTopicsFlow else flowOf(emptyList()))
             .catch { emit(emptyList()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
     val adminSharedSubtopics: StateFlow<List<Subtopic>> =
-        (if (isAdminUser) sharedRepo.observeSharedSubtopics(true) else flowOf(emptyList()))
+        (if (isAdminUser) sharedSubtopicsFlow else flowOf(emptyList()))
             .catch { emit(emptyList()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
     val studentSummaries: StateFlow<List<StudentSummary>> =
-        (if (isAdminUser) sharedRepo.observeStudentSummaries() else flowOf(emptyList()))
+        (if (isAdminUser) adminCatalogStore.studentSummaries else flowOf(emptyList()))
             .catch { emit(emptyList()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
     val adminWhatsAppRequests: StateFlow<List<WhatsAppRequestRecord>> =
-        (if (isAdminUser) sharedRepo.observeAllWhatsAppRequests() else flowOf(emptyList()))
+        (if (isAdminUser) adminCatalogStore.whatsAppRequests else flowOf(emptyList()))
             .catch { emit(emptyList()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
     init {
         viewModelScope.launch {
-            val role = if (isAdminUser) "admin" else "student"
-            repository.ensureUserProfile(firebaseUid, initialDisplayName, signedInEmail, initialPhotoUrl, role)
-            repository.fetchSupportWhatsAppDigits()?.let { prefs.setAdminWhatsAppNumber(it) }
-            fileStorage.copyOfflineFilesToUser(firebaseUid)
-            val legacySnap = offlineStore.currentSnapshot()
-            if (legacySnap.hasUserEdits) {
-                repository.syncOfflineSnapshotToCloud(firebaseUid, legacySnap).onSuccess {
-                    offlineStore.markSyncedToCloud()
-                    prefs.markSeeded(firebaseUid)
+            val role = GoogleAuthHelper.resolveRole(signedInEmail)
+            offlineStore.updateProfileMeta(
+                displayName = initialDisplayName,
+                email = signedInEmail,
+                photoUrl = initialPhotoUrl,
+                role = role
+            )
+            val savedSettings = prefs.settingsFlow.first()
+            _publishedCatalogLink.value = savedSettings.sharedCatalogUrl.takeIf { it.isNotBlank() }
+
+            if (!isOfflineAccount) {
+                // Migrate offline files & edits if user started offline and then logged in with Gmail
+                fileStorage.copyOfflineFilesToUser(storageOwnerId)
+                val guestStore = LocalOfflineStore(appContext, ownerId = LocalOfflineStore.OFFLINE_UID)
+                val guestSnap = guestStore.currentSnapshot()
+                if (guestSnap.hasUserEdits) {
+                    offlineStore.adoptOfflineSnapshotIfEmpty(guestSnap)
+                    guestStore.markSyncedToCloud()
+                }
+                prefs.markSeeded(storageOwnerId)
+                syncStudentAnalyticsSummary()
+
+                if (savedSettings.lastDriveBackupMillis > 0L && !offlineStore.hasPendingCloudChanges()) {
+                    _driveSyncState.value = DriveSyncUiState.Synced(
+                        savedSettings.lastDriveBackupMillis,
+                        savedSettings.lastDriveSyncMessage.ifBlank { "Google Drive Synced" }
+                    )
+                }
+
+                // Attempt automatic Drive restore + merge + sync on Gmail login
+                if (LocalFileStorage.isOnline(appContext)) {
+                    val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
+                    cachedDriveToken = token
+                    if (!token.isNullOrBlank()) {
+                        performDriveRestoreAndSync(token, mergeFirst = true, silent = true)
+                    } else if (savedSettings.lastDriveBackupMillis == 0L) {
+                        _driveSyncState.value = DriveSyncUiState.NeedAuth("Tap Sync Now to connect Google Drive")
+                    }
+                } else {
+                    _driveSyncState.value = DriveSyncUiState.PendingOffline("Offline — will sync when online")
                 }
             } else {
-                repository.seedDefaultSubjectsIfEmpty(firebaseUid).onSuccess { prefs.markSeeded(firebaseUid) }
+                _driveSyncState.value = DriveSyncUiState.OfflineAccount
             }
-            syncStudentAnalyticsSummary()
         }
+
         viewModelScope.launch {
             combine(sharedSubjectsFlow, sharedTopicsFlow, sharedSubtopicsFlow, sharedContentsFlow, sharedVideosFlow) { s, t, st, c, v ->
                 Triple(Triple(s, t, st), c, v)
@@ -235,18 +296,189 @@ class MainViewModel(
     private fun <T> Flow<T>.toUiStateFlow(label: String): StateFlow<UiState<T>> =
         map<T, UiState<T>> { UiState.Success(it) }
             .catch { error ->
-                val firestoreError = generateSequence(error) { it.cause }
-                    .filterIsInstance<FirebaseFirestoreException>()
-                    .firstOrNull()
-                if (firestoreError == null && error is CancellationException) throw error
-                val rootError = firestoreError ?: error
-                Log.w(TAG, "Error in $label", rootError)
-                emit(UiState.Error(rootError.message ?: "Failed to load data"))
+                if (error is CancellationException) throw error
+                Log.w(TAG, "Error in $label", error)
+                emit(UiState.Error(error.message ?: "Failed to load data"))
             }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), UiState.Loading)
 
     fun showToast(message: String) { _toastEvents.tryEmit(message) }
     fun clearLastReturnedScore() { _lastReturnedScore.value = null }
+    fun clearPendingConsentSender() { _pendingConsentSender.value = null }
+
+    fun setAutoSyncEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            prefs.setCloudSyncEnabled(enabled)
+            _toastEvents.tryEmit(if (enabled) "Auto-Sync to Google Drive enabled" else "Auto-Sync paused (Manual Sync available)")
+        }
+    }
+
+    fun triggerSyncNow(activity: Activity?) {
+        if (isOfflineAccount) {
+            _toastEvents.tryEmit("Google Drive sync के लिए पहले Gmail से लॉगिन करें।")
+            return
+        }
+        if (!LocalFileStorage.isOnline(appContext)) {
+            _driveSyncState.value = DriveSyncUiState.PendingOffline("No internet — saved locally")
+            _toastEvents.tryEmit("इंटरनेट उपलब्ध नहीं है। आपका डेटा फोन में सुरक्षित है।")
+            return
+        }
+        viewModelScope.launch {
+            val token = obtainDriveToken(activity, actionTag = "SYNC") ?: return@launch
+            performDriveRestoreAndSync(token, mergeFirst = true, silent = false)
+        }
+    }
+
+    fun triggerRestoreFromDrive(activity: Activity?) {
+        if (isOfflineAccount) {
+            _toastEvents.tryEmit("Restore के लिए पहले Gmail से लॉगिन करें।")
+            return
+        }
+        if (!LocalFileStorage.isOnline(appContext)) {
+            _toastEvents.tryEmit("इंटरनेट कनेक्शन जांचें और फिर Restore करें।")
+            return
+        }
+        viewModelScope.launch {
+            val token = obtainDriveToken(activity, actionTag = "RESTORE") ?: return@launch
+            performDriveRestoreOnly(token)
+        }
+    }
+
+    fun onConsentIntentResult(activity: Activity, data: Intent?) {
+        val token = driveManager.extractTokenFromIntent(activity, data)
+        if (token.isNullOrBlank()) {
+            _driveSyncState.value = DriveSyncUiState.NeedAuth("Google Drive authorization cancelled")
+            return
+        }
+        cachedDriveToken = token
+        viewModelScope.launch {
+            when (pendingActionAfterConsent) {
+                "RESTORE" -> performDriveRestoreOnly(token)
+                "PUBLISH_CATALOG" -> publishAdminCatalogWithToken(token)
+                else -> performDriveRestoreAndSync(token, mergeFirst = true, silent = false)
+            }
+        }
+    }
+
+    private suspend fun obtainDriveToken(activity: Activity?, actionTag: String): String? {
+        cachedDriveToken?.takeIf { it.isNotBlank() }?.let { return it }
+        driveManager.silentGetDriveToken(appContext)?.let {
+            cachedDriveToken = it
+            return it
+        }
+        if (activity == null) {
+            _driveSyncState.value = DriveSyncUiState.NeedAuth("Tap Sync Now to authorize Drive")
+            return null
+        }
+        pendingActionAfterConsent = actionTag
+        return when (val out = driveManager.requestDriveAuthorization(activity)) {
+            is DriveAuthOutcome.Authorized -> {
+                cachedDriveToken = out.accessToken
+                out.accessToken
+            }
+            is DriveAuthOutcome.NeedsResolution -> {
+                _pendingConsentSender.value = out.intentSender
+                null
+            }
+            is DriveAuthOutcome.Error -> {
+                _driveSyncState.value = DriveSyncUiState.Error(out.message)
+                _toastEvents.tryEmit(out.message)
+                null
+            }
+        }
+    }
+
+    private fun scheduleAutoSyncIfEligible() {
+        if (isOfflineAccount) return
+        if (!localSettings.value.cloudSyncEnabled) {
+            _driveSyncState.value = DriveSyncUiState.PendingOffline("Auto-Sync off • Saved locally")
+            return
+        }
+        if (!LocalFileStorage.isOnline(appContext)) {
+            _driveSyncState.value = DriveSyncUiState.PendingOffline("Offline • Saved locally, syncs when online")
+            return
+        }
+        viewModelScope.launch {
+            val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
+            cachedDriveToken = token
+            if (token.isNullOrBlank()) {
+                _driveSyncState.value = DriveSyncUiState.PendingOffline("Tap Sync Now to upload changes")
+                return@launch
+            }
+            performDriveUploadOnly(token, silent = true)
+        }
+    }
+
+    private suspend fun performDriveRestoreAndSync(token: String, mergeFirst: Boolean, silent: Boolean) {
+        _driveSyncState.value = DriveSyncUiState.Syncing("Syncing with Google Drive...")
+        if (mergeFirst && driveManager.hasBackupInLearnTalentFolder(token)) {
+            driveManager.restoreFromLearnTalentFolder(token).onSuccess { restored ->
+                restorePayloadIntoVault(restored.snapshotJson, restored.restoredBinaryFiles, mergeMode = true)
+            }
+        }
+        performDriveUploadOnly(token, silent = silent)
+    }
+
+    private suspend fun performDriveRestoreOnly(token: String) {
+        _driveSyncState.value = DriveSyncUiState.Syncing("Restoring from Google Drive...")
+        driveManager.restoreFromLearnTalentFolder(token).onSuccess { restored ->
+            restorePayloadIntoVault(restored.snapshotJson, restored.restoredBinaryFiles, mergeMode = true)
+            val now = System.currentTimeMillis()
+            val msg = "Restored ${restored.restoredBinaryFiles.size} files from Drive"
+            prefs.setLastDriveBackupMillis(now, msg)
+            _driveSyncState.value = DriveSyncUiState.Synced(now, msg)
+            _toastEvents.tryEmit("Google Drive से सारा डेटा सफलतापूर्वक वापस आ गया!")
+        }.onFailure { err ->
+            val msg = err.message ?: "Restore failed"
+            if (msg.contains("401")) cachedDriveToken = null
+            _driveSyncState.value = DriveSyncUiState.Error(msg)
+            _toastEvents.tryEmit(msg)
+        }
+    }
+
+    private suspend fun restorePayloadIntoVault(
+        snapshotJson: String,
+        binaryFiles: Map<String, ByteArray>,
+        mergeMode: Boolean,
+    ) {
+        for ((name, bytes) in binaryFiles) {
+            if (bytes.isNotEmpty()) {
+                fileStorage.writeLocalBytes(storageOwnerId, name, bytes)
+            }
+        }
+        if (mergeMode) {
+            offlineStore.mergeDriveBackupJson(snapshotJson)
+        } else {
+            offlineStore.importSnapshotJson(snapshotJson)
+        }
+        offlineStore.updateProfileMeta(
+            displayName = initialDisplayName,
+            email = signedInEmail,
+            photoUrl = initialPhotoUrl,
+            role = GoogleAuthHelper.resolveRole(signedInEmail)
+        )
+    }
+
+    private suspend fun performDriveUploadOnly(token: String, silent: Boolean) {
+        _driveSyncState.value = DriveSyncUiState.Syncing("Uploading to LEARN TALENT Drive...")
+        val payload = offlineStore.buildStructuredDrivePayload()
+        val files = fileStorage.listAllUserFiles(storageOwnerId)
+        driveManager.syncStructuredVaultToDrive(token, payload, files).onSuccess { summary ->
+            offlineStore.markSyncedToCloud()
+            val now = System.currentTimeMillis()
+            val detail = "Google Drive Synced (${summary.uploadedFilesCount} files)"
+            prefs.setLastDriveBackupMillis(now, detail)
+            _driveSyncState.value = DriveSyncUiState.Synced(now, detail)
+            if (!silent) {
+                _toastEvents.tryEmit("Google Drive ('LEARN TALENT') पर डेटा सिंक हो गया!")
+            }
+        }.onFailure { err ->
+            val msg = err.message ?: "Google Drive sync failed"
+            if (msg.contains("401")) cachedDriveToken = null
+            _driveSyncState.value = DriveSyncUiState.Error(msg)
+            if (!silent) _toastEvents.tryEmit(msg)
+        }
+    }
 
     fun toggleLightDarkTheme() {
         val current = localSettings.value
@@ -261,7 +493,7 @@ class MainViewModel(
     fun selectTheme(themeId: String) {
         viewModelScope.launch {
             prefs.setTheme(themeId)
-            repository.updateTheme(firebaseUid, themeId)
+            offlineStore.updateTheme(themeId)
         }
     }
 
@@ -284,7 +516,6 @@ class MainViewModel(
                 return@launch
             }
             prefs.setAdminWhatsAppNumber(normalized)
-            repository.updateSupportWhatsAppDigits(normalized)
             _toastEvents.tryEmit("Support number updated!")
         }
     }
@@ -298,67 +529,69 @@ class MainViewModel(
 
     fun updateExamGoal(examName: String, examDateMillis: Long, subjects: List<Subject>, autoPlan: Boolean) {
         viewModelScope.launch {
-            repository.updateExamGoal(firebaseUid, examName, examDateMillis).onSuccess {
-                if (autoPlan && subjects.isNotEmpty()) {
-                    repository.generateExamRevisionPlan(firebaseUid, subjects, examDateMillis)
-                        .onSuccess { days -> _toastEvents.tryEmit("Exam goal saved & $days-day plan created!") }
-                        .onFailure { _toastEvents.tryEmit("Exam goal saved.") }
-                } else {
-                    _toastEvents.tryEmit("Exam goal updated!")
-                }
-            }.onFailure { _toastEvents.tryEmit(it.message ?: "Failed to save exam goal") }
+            offlineStore.updateExamGoal(examName, examDateMillis)
+            if (autoPlan && subjects.isNotEmpty()) {
+                val days = offlineStore.generateExamRevisionPlan(subjects, examDateMillis)
+                _toastEvents.tryEmit("Exam goal saved & $days-day plan created!")
+            } else {
+                _toastEvents.tryEmit("Exam goal updated!")
+            }
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun addSubject(nameEn: String, nameHi: String?, iconKey: String, colorHex: String, sortOrder: Long) {
         viewModelScope.launch {
-            repository.addSubject(firebaseUid, nameEn, nameHi, iconKey, colorHex, sortOrder)
-                .onSuccess { _toastEvents.tryEmit("Subject added") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Could not add subject") }
+            offlineStore.addSubject(nameEn, nameHi, iconKey, colorHex, sortOrder)
+            _toastEvents.tryEmit("Subject added")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun addTopic(subjectId: String, name: String, description: String?) {
         viewModelScope.launch {
-            repository.addTopic(firebaseUid, subjectId, name, description)
-                .onSuccess { _toastEvents.tryEmit("Topic added") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Could not add topic") }
+            offlineStore.addTopic(subjectId, name, description)
+            _toastEvents.tryEmit("Topic added")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun deleteTopic(topicId: String) {
         viewModelScope.launch {
-            repository.deleteTopic(firebaseUid, topicId)
+            offlineStore.deleteTopic(topicId)
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun addSubtopic(subjectId: String, topicId: String, name: String) {
         viewModelScope.launch {
-            repository.addSubtopic(firebaseUid, subjectId, topicId, name)
-                .onSuccess { _toastEvents.tryEmit("Sub-topic added") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Could not add sub-topic") }
+            offlineStore.addSubtopic(subjectId, topicId, name)
+            _toastEvents.tryEmit("Sub-topic added")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun deleteSubtopic(subtopicId: String) {
         viewModelScope.launch {
-            repository.deleteSubtopic(firebaseUid, subtopicId)
+            offlineStore.deleteSubtopic(subtopicId)
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun markSubtopicStudiedToday(subtopic: Subtopic, subjectName: String) {
         viewModelScope.launch {
-            repository.markSubtopicStudiedToday(firebaseUid, subtopic, subjectName)
-                .onSuccess { _toastEvents.tryEmit("आज के अध्ययन में जोड़ा गया!") }
+            offlineStore.markSubtopicStudiedToday(subtopic, subjectName)
+            _toastEvents.tryEmit("आज के अध्ययन में जोड़ा गया!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     // Full Length Exams & HTML Mock Tests
     fun addFullLengthExam(name: String, subtitle: String?) {
         viewModelScope.launch {
-            repository.addFullLengthExam(firebaseUid, name, subtitle)
-                .onSuccess { _toastEvents.tryEmit("एग्जाम '$name' बनाया गया!") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Could not create exam") }
+            offlineStore.addFullLengthExam(name, subtitle)
+            _toastEvents.tryEmit("एग्जाम '$name' बनाया गया!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
@@ -366,26 +599,25 @@ class MainViewModel(
         viewModelScope.launch {
             if (exam.isShared) {
                 if (isAdminUser) {
-                    sharedRepo.deleteSharedFullLengthExam(exam.id)
-                        .onSuccess { _toastEvents.tryEmit("Deleted '${exam.name}'") }
+                    adminCatalogStore.deleteSharedFullLengthExam(exam.id)
+                    _toastEvents.tryEmit("Deleted '${exam.name}'")
                 }
                 return@launch
             }
-            repository.deleteFullLengthExam(firebaseUid, exam.id)
-                .onSuccess { _toastEvents.tryEmit("Deleted '${exam.name}'") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Could not delete exam") }
+            offlineStore.deleteFullLengthExam(exam.id)
+            _toastEvents.tryEmit("Deleted '${exam.name}'")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun uploadFullLengthHtmlTest(examId: String, examName: String, title: String, uri: Uri) {
         viewModelScope.launch {
-            val noteId = "note_${StudyRepository.newValidId()}"
+            val noteId = "note_${StudyDateUtils.newValidId()}"
             try {
                 val (fileName, file) = fileStorage.copyUriToLocal(storageOwnerId, noteId, uri, "html")
                 val htmlText = if (file.length() <= 190_000L) file.readText(Charsets.UTF_8) else null
                 val finalTitle = title.trim().ifBlank { fileName.substringBeforeLast(".") }
-                repository.addNote(
-                    uid = firebaseUid,
+                offlineStore.addNote(
                     noteId = noteId,
                     subjectId = FullLengthExamDefaults.SUBJECT_ID,
                     topicId = examId,
@@ -396,15 +628,9 @@ class MainViewModel(
                     localFileName = fileName,
                     htmlContent = htmlText,
                     isMockTest = true
-                ).onSuccess {
-                    if (htmlText == null) {
-                        _toastEvents.tryEmit("'$finalTitle' सेव हुआ (फाइल बड़ी होने के कारण लोकल से खुलेगी)")
-                    } else {
-                        _toastEvents.tryEmit("HTML टेस्ट '$finalTitle' अपलोड हो गया!")
-                    }
-                }.onFailure {
-                    _toastEvents.tryEmit(it.message ?: "Cloud save failed")
-                }
+                )
+                _toastEvents.tryEmit("HTML टेस्ट '$finalTitle' सेव हो गया!")
+                scheduleAutoSyncIfEligible()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -425,9 +651,10 @@ class MainViewModel(
 
     fun createFolder(subjectId: String, topicId: String, subtopicId: String, folderName: String) {
         viewModelScope.launch {
-            val noteId = "note_${StudyRepository.newValidId()}"
-            repository.addNote(firebaseUid, noteId, subjectId, topicId, subtopicId, folderName, folderName, NoteType.FOLDER)
-                .onSuccess { _toastEvents.tryEmit("Folder '$folderName' created") }
+            val noteId = "note_${StudyDateUtils.newValidId()}"
+            offlineStore.addNote(noteId, subjectId, topicId, subtopicId, folderName, folderName, NoteType.FOLDER)
+            _toastEvents.tryEmit("Folder '$folderName' created")
+            scheduleAutoSyncIfEligible()
         }
     }
 
@@ -436,7 +663,7 @@ class MainViewModel(
         customTitle: String, noteType: NoteType, uri: Uri, isMockTest: Boolean = noteType == NoteType.HTML,
     ) {
         viewModelScope.launch {
-            val noteId = "note_${StudyRepository.newValidId()}"
+            val noteId = "note_${StudyDateUtils.newValidId()}"
             val ext = when (noteType) {
                 NoteType.PDF -> "pdf"; NoteType.HTML -> "html"; NoteType.IMAGE -> "jpg"; NoteType.FOLDER -> "txt"
             }
@@ -444,27 +671,32 @@ class MainViewModel(
                 val (fileName, file) = fileStorage.copyUriToLocal(storageOwnerId, noteId, uri, ext)
                 val htmlText = if (noteType == NoteType.HTML && file.length() <= 190_000L) file.readText(Charsets.UTF_8) else null
                 val finalTitle = customTitle.ifBlank { fileName }
-                repository.addNote(firebaseUid, noteId, subjectId, topicId, subtopicId, folderName, finalTitle, noteType, fileName, htmlText, isMockTest)
-                    .onSuccess { _toastEvents.tryEmit("Saved '$finalTitle'") }
-                    .onFailure { _toastEvents.tryEmit(it.message ?: "Cloud save failed") }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _toastEvents.tryEmit(e.message ?: "Failed to import file") }
+                offlineStore.addNote(noteId, subjectId, topicId, subtopicId, folderName, finalTitle, noteType, fileName, htmlText, isMockTest)
+                _toastEvents.tryEmit("Saved '$finalTitle'")
+                scheduleAutoSyncIfEligible()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _toastEvents.tryEmit(e.message ?: "Failed to import file")
+            }
         }
     }
 
     fun createSampleHtmlTest(subjectId: String, topicId: String, subtopicId: String, folderName: String, title: String) {
         viewModelScope.launch {
-            val noteId = "note_${StudyRepository.newValidId()}"
+            val noteId = "note_${StudyDateUtils.newValidId()}"
             val html = LocalFileStorage.buildSampleHtmlMockTest(title)
             val fileName = fileStorage.writeLocalHtml(storageOwnerId, noteId, title, html)
-            repository.addNote(firebaseUid, noteId, subjectId, topicId, subtopicId, folderName, title, NoteType.HTML, fileName, html, true)
-                .onSuccess { _toastEvents.tryEmit("Sample HTML Test created!") }
+            offlineStore.addNote(noteId, subjectId, topicId, subtopicId, folderName, title, NoteType.HTML, fileName, html, true)
+            _toastEvents.tryEmit("Sample HTML Test created!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun renameOrMoveNote(noteId: String, newTitle: String, newFolderName: String) {
         viewModelScope.launch {
-            repository.renameOrMoveNote(firebaseUid, noteId, newTitle, newFolderName)
+            offlineStore.renameOrMoveNote(noteId, newTitle, newFolderName)
+            scheduleAutoSyncIfEligible()
         }
     }
 
@@ -480,8 +712,7 @@ class MainViewModel(
         )
         viewModelScope.launch {
             if (!note.isShared) {
-                repository.markNoteOpenedToday(firebaseUid, note.id)
-                repository.addStudyLog(firebaseUid, StudyRepository.todayKey(), "STUDIED", note.title, subjectName, note.subtopicId, true, "Opened ${note.noteType}")
+                offlineStore.markNoteOpenedToday(note, subjectName)
             }
         }
     }
@@ -493,8 +724,9 @@ class MainViewModel(
                 return@launch
             }
             fileStorage.deleteLocalFile(storageOwnerId, note.localFileName)
-            repository.deleteNote(firebaseUid, note.id)
-                .onSuccess { _toastEvents.tryEmit("Deleted '${note.title}'") }
+            offlineStore.deleteNote(note.id)
+            _toastEvents.tryEmit("Deleted '${note.title}'")
+            scheduleAutoSyncIfEligible()
         }
     }
 
@@ -507,13 +739,17 @@ class MainViewModel(
 
     suspend fun loadHtmlContent(note: StudyNote): String? {
         fileStorage.readHtmlFromFileOrWrite(storageOwnerId, note.localFileName, note.htmlContent, note.id, note.isShared)?.let { return it }
-        if (note.isShared && (!note.downloadUrl.isNullOrBlank() || !note.storagePath.isNullOrBlank())) {
-            val downloaded = cloudStorage.downloadSharedFileToCache(
-                note.id, note.version, note.localFileName ?: "${note.id}.html", note.downloadUrl, note.storagePath, note.htmlContent, fileStorage
-            ).getOrNull()
-            if (downloaded != null && downloaded.exists()) {
+        if (note.isShared && !note.downloadUrl.isNullOrBlank()) {
+            val bytes = driveManager.downloadPublicDriveUrl(note.downloadUrl).getOrNull()
+            if (bytes != null && bytes.isNotEmpty()) {
+                val destName = note.localFileName ?: "${note.id}.html"
+                val destFile = File(fileStorage.sharedCacheDir(), destName)
+                destFile.writeBytes(bytes)
+                fileStorage.saveSharedDownloadRecord(
+                    SharedDownloadRecord(note.id, note.version, destName, bytes.size.toLong(), System.currentTimeMillis())
+                )
                 _sharedDownloadsMap.value = fileStorage.loadSharedDownloadsMap()
-                return downloaded.readText(Charsets.UTF_8)
+                return String(bytes, Charsets.UTF_8)
             }
         }
         return null
@@ -521,32 +757,37 @@ class MainViewModel(
 
     fun downloadSharedNote(note: StudyNote, onDownloaded: ((File) -> Unit)? = null) {
         viewModelScope.launch {
-            _sharedDownloadProgress.value = _sharedDownloadProgress.value + (note.id to 0.05f)
+            _sharedDownloadProgress.value = _sharedDownloadProgress.value + (note.id to 0.15f)
             val fallbackName = note.localFileName ?: when (note.resolvedType()) {
                 NoteType.PDF -> "${note.id}.pdf"; NoteType.HTML -> "${note.id}.html"; NoteType.IMAGE -> "${note.id}.jpg"; NoteType.FOLDER -> "${note.id}.txt"
             }
-            val existingRec = _sharedDownloadsMap.value[note.id]
-            val isFirstDownload = existingRec == null
-            cloudStorage.downloadSharedFileToCache(
-                contentId = note.id,
-                version = note.version,
-                localFileName = fallbackName,
-                downloadUrl = note.downloadUrl,
-                storagePath = note.storagePath,
-                inlineHtml = note.htmlContent,
-                fileStorage = fileStorage,
-                onProgress = { pct -> _sharedDownloadProgress.value = _sharedDownloadProgress.value + (note.id to pct) }
-            ).onSuccess { file ->
-                _sharedDownloadProgress.value = _sharedDownloadProgress.value - note.id
-                _sharedDownloadsMap.value = fileStorage.loadSharedDownloadsMap()
-                if (isFirstDownload) {
-                    sharedRepo.incrementSharedDownloadCount(note.id)
-                    syncStudentAnalyticsSummary()
+            val destFile = File(fileStorage.sharedCacheDir(), fallbackName)
+            val result = runCatching {
+                when {
+                    destFile.exists() && destFile.length() > 0L -> destFile
+                    !note.downloadUrl.isNullOrBlank() -> {
+                        val bytes = driveManager.downloadPublicDriveUrl(note.downloadUrl).getOrThrow()
+                        _sharedDownloadProgress.value = _sharedDownloadProgress.value + (note.id to 0.85f)
+                        destFile.writeBytes(bytes)
+                        destFile
+                    }
+                    !note.htmlContent.isNullOrBlank() -> {
+                        destFile.writeText(note.htmlContent, Charsets.UTF_8)
+                        destFile
+                    }
+                    else -> throw IllegalStateException("Shared file link उपलब्ध नहीं है।")
                 }
+            }
+            _sharedDownloadProgress.value = _sharedDownloadProgress.value - note.id
+            result.onSuccess { file ->
+                fileStorage.saveSharedDownloadRecord(
+                    SharedDownloadRecord(note.id, note.version, fallbackName, file.length(), System.currentTimeMillis())
+                )
+                _sharedDownloadsMap.value = fileStorage.loadSharedDownloadsMap()
+                adminCatalogStore.incrementSharedDownloadCount(note.id)
                 _toastEvents.tryEmit("Offline saved: ${note.title}")
                 onDownloaded?.invoke(file)
             }.onFailure { err ->
-                _sharedDownloadProgress.value = _sharedDownloadProgress.value - note.id
                 _toastEvents.tryEmit(err.message ?: "Download failed")
             }
         }
@@ -577,14 +818,15 @@ class MainViewModel(
         fileStorage.savePdfAnnotationDoc(storageOwnerId, withTime)
         val encoded = jsonCodec.encodeToString(withTime)
         viewModelScope.launch {
-            repository.savePdfAnnotationDoc(firebaseUid, doc.noteId, encoded, withTime.updatedAtMillis)
+            offlineStore.savePdfAnnotationDoc(doc.noteId, encoded, withTime.updatedAtMillis)
             if (!silent) _toastEvents.tryEmit("PDF annotations saved!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun saveAnnotatedPdfAsNewCopy(sourceFile: File, note: StudyNote?, doc: PdfAnnotationDocument) {
         viewModelScope.launch {
-            val newNoteId = "note_${StudyRepository.newValidId()}"
+            val newNoteId = "note_${StudyDateUtils.newValidId()}"
             val cleanTitle = "${note?.title ?: "Annotated"} (My Annotated Copy)"
             val destFileName = "${newNoteId}_annotated.pdf"
             val destFile = File(fileStorage.userDir(storageOwnerId), destFileName)
@@ -594,9 +836,10 @@ class MainViewModel(
                 val subjId = note?.subjectId?.takeIf { it.isNotBlank() } ?: "subj_other"
                 val topId = note?.topicId?.takeIf { it.isNotBlank() } ?: "topic_11_0"
                 val subId = note?.subtopicId?.takeIf { it.isNotBlank() } ?: "sub_11_0_0"
-                repository.addNote(firebaseUid, newNoteId, subjId, topId, subId, "Annotated Copies", cleanTitle, NoteType.PDF, destFileName)
-                _toastEvents.tryEmit("Annotated copy saved! Check Personal/Annotated Copies or Export.")
+                offlineStore.addNote(newNoteId, subjId, topId, subId, "Annotated Copies", cleanTitle, NoteType.PDF, destFileName)
+                _toastEvents.tryEmit("Annotated copy saved! Check Annotated Copies or Export.")
                 fileStorage.sharePdfFile(destFile, "Share Annotated PDF Copy")
+                scheduleAutoSyncIfEligible()
             }.onFailure {
                 _toastEvents.tryEmit(it.message ?: "Failed to create annotated PDF copy")
             }
@@ -635,31 +878,35 @@ class MainViewModel(
         onSaved: (String) -> Unit = {},
     ) {
         viewModelScope.launch {
-            val resultId = "res_${StudyRepository.newValidId()}"
+            val resultId = "res_${StudyDateUtils.newValidId()}"
             val breakdownJson = runCatching { jsonCodec.encodeToString(questionsBreakdown) }.getOrNull()
             val summaryText = "$correctCount Right • $wrongCount Wrong • $unattemptedCount Left"
             if (!noteId.isNullOrBlank()) clearInProgressTestAttempt(noteId)
 
-            repository.recordTestResult(
-                uid = firebaseUid, subjectId = subjectId, topicId = topicId, subtopicId = subtopicId,
-                noteId = noteId, testTitle = testTitle, scoreObtained = scoreObtained, totalMarks = totalMarks,
-                summaryText = summaryText, totalQuestions = totalQuestions, attemptedCount = attemptedCount,
-                correctCount = correctCount, wrongCount = wrongCount, unattemptedCount = unattemptedCount,
-                durationSeconds = durationSeconds, testMode = testMode, breakdownJson = breakdownJson, docId = resultId,
-            ).onSuccess {
-                val pct = if (totalMarks > 0.0) ((scoreObtained / totalMarks) * 100.0).coerceIn(0.0, 100.0) else 0.0
-                _lastReturnedScore.value = TestResult(
-                    id = resultId, userId = firebaseUid, subjectId = subjectId, topicId = topicId, subtopicId = subtopicId,
-                    noteId = noteId, testTitle = testTitle, scoreObtained = scoreObtained, totalMarks = totalMarks,
-                    percentage = pct, totalQuestions = totalQuestions, attemptedCount = attemptedCount,
-                    correctCount = correctCount, wrongCount = wrongCount, unattemptedCount = unattemptedCount,
-                    durationSeconds = durationSeconds, testMode = testMode, breakdownJson = breakdownJson,
-                    summaryText = summaryText, takenDate = StudyRepository.todayKey(),
-                )
-                repository.addStudyLog(firebaseUid, StudyRepository.todayKey(), "STUDIED", "$testTitle (${formatNum(scoreObtained)}/${formatNum(totalMarks)})", subjectName, subtopicId, true, summaryText)
-                syncStudentAnalyticsSummary(extraAttempt = true)
-                onSaved(resultId)
-            }.onFailure { _toastEvents.tryEmit(it.message ?: "Failed to save test result") }
+            val savedResult = offlineStore.recordTestResult(
+                subjectId = subjectId,
+                topicId = topicId,
+                subtopicId = subtopicId,
+                noteId = noteId,
+                testTitle = testTitle,
+                scoreObtained = scoreObtained,
+                totalMarks = totalMarks,
+                summaryText = summaryText,
+                subjectName = subjectName,
+                totalQuestions = totalQuestions,
+                attemptedCount = attemptedCount,
+                correctCount = correctCount,
+                wrongCount = wrongCount,
+                unattemptedCount = unattemptedCount,
+                durationSeconds = durationSeconds,
+                testMode = testMode,
+                breakdownJson = breakdownJson,
+                resultId = resultId,
+            )
+            _lastReturnedScore.value = savedResult
+            syncStudentAnalyticsSummary()
+            scheduleAutoSyncIfEligible()
+            onSaved(resultId)
         }
     }
 
@@ -692,26 +939,28 @@ class MainViewModel(
     // Personal Notes Maker
     fun upsertPersonalNote(note: PersonalNote, silent: Boolean = false) {
         val withTime = note.copy(
-            id = note.id.ifBlank { "pnote_${StudyRepository.newValidId()}" },
+            id = note.id.ifBlank { "pnote_${StudyDateUtils.newValidId()}" },
             updatedAtMillis = System.currentTimeMillis()
         )
         viewModelScope.launch {
-            repository.savePersonalNote(firebaseUid, withTime).onSuccess {
-                if (!silent) _toastEvents.tryEmit("Personal note saved!")
-            }.onFailure { _toastEvents.tryEmit(it.message ?: "Save failed") }
+            offlineStore.upsertPersonalNote(withTime)
+            if (!silent) _toastEvents.tryEmit("Personal note saved!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun deletePersonalNote(noteId: String) {
         viewModelScope.launch {
-            repository.deletePersonalNote(firebaseUid, noteId).onSuccess { _toastEvents.tryEmit("Note deleted") }
+            offlineStore.deletePersonalNote(noteId)
+            _toastEvents.tryEmit("Note deleted")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun copyPersonalNoteImage(noteId: String, uri: Uri, onCopied: (String) -> Unit) {
         viewModelScope.launch {
             runCatching {
-                fileStorage.copyUriToLocal(storageOwnerId, "pimg_${noteId}", uri, "jpg").first
+                fileStorage.copyUriToLocal(storageOwnerId, "pimg_$noteId", uri, "jpg").first
             }.onSuccess(onCopied)
                 .onFailure { _toastEvents.tryEmit(it.message ?: "Image attach failed") }
         }
@@ -755,11 +1004,11 @@ class MainViewModel(
                 it.bookmarkType == bookmarkType.name && it.refId == refId && it.pageIndex == pageIndex && it.title == title
             }
             if (existing != null) {
-                repository.deleteBookmark(firebaseUid, existing.id)
+                offlineStore.deleteBookmark(existing.id)
                 _toastEvents.tryEmit("Bookmark removed")
             } else {
                 val item = BookmarkItem(
-                    id = "bmk_${StudyRepository.newValidId()}",
+                    id = "bmk_${StudyDateUtils.newValidId()}",
                     bookmarkType = bookmarkType.name,
                     title = title,
                     subtitle = subtitle,
@@ -771,31 +1020,34 @@ class MainViewModel(
                     questionJson = questionJson,
                     createdAtMillis = System.currentTimeMillis(),
                 )
-                repository.saveBookmark(firebaseUid, item)
+                offlineStore.upsertBookmark(item)
                 _toastEvents.tryEmit("Added to Bookmarks!")
             }
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun deleteBookmark(bookmarkId: String) {
         viewModelScope.launch {
-            repository.deleteBookmark(firebaseUid, bookmarkId)
+            offlineStore.deleteBookmark(bookmarkId)
+            scheduleAutoSyncIfEligible()
         }
     }
 
     // Videos & MCQs
     fun addVideo(subjectId: String, topicId: String, subtopicId: String, title: String, url: String, channelOrNote: String?) {
         viewModelScope.launch {
-            repository.addVideo(firebaseUid, subjectId, topicId, subtopicId, title, url, channelOrNote)
-                .onSuccess { _toastEvents.tryEmit("YouTube link saved!") }
+            offlineStore.addVideo(subjectId, topicId, subtopicId, title, url, channelOrNote)
+            _toastEvents.tryEmit("YouTube link saved!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun markVideoWatched(video: VideoLink, subjectName: String) {
         viewModelScope.launch {
             if (!video.isShared) {
-                repository.markVideoWatchedToday(firebaseUid, video.id)
-                repository.addStudyLog(firebaseUid, StudyRepository.todayKey(), "STUDIED", video.title, subjectName, video.subtopicId, true, "Watched YouTube video")
+                offlineStore.markVideoWatchedToday(video, subjectName)
+                scheduleAutoSyncIfEligible()
             }
         }
     }
@@ -803,54 +1055,60 @@ class MainViewModel(
     fun deleteVideo(video: VideoLink) {
         viewModelScope.launch {
             if (video.isShared) {
-                if (isAdminUser) sharedRepo.deleteSharedVideo(video.id)
+                if (isAdminUser) adminCatalogStore.deleteSharedVideo(video.id)
                 return@launch
             }
-            repository.deleteVideo(firebaseUid, video.id)
+            offlineStore.deleteVideo(video.id)
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun addMcq(subjectId: String, topicId: String, subtopicId: String, question: String, options: List<String>, correctIndex: Int, explanation: String?) {
         viewModelScope.launch {
-            repository.addMcq(firebaseUid, subjectId, topicId, subtopicId, question, options, correctIndex, explanation)
-                .onSuccess { _toastEvents.tryEmit("Practice MCQ added!") }
+            offlineStore.addMcq(subjectId, topicId, subtopicId, question, options, correctIndex, explanation)
+            _toastEvents.tryEmit("Practice MCQ added!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun deleteMcq(mcq: McqQuestion) {
         viewModelScope.launch {
             if (mcq.isShared) {
-                if (isAdminUser) sharedRepo.deleteSharedMcq(mcq.id)
+                if (isAdminUser) adminCatalogStore.deleteSharedMcq(mcq.id)
                 return@launch
             }
-            repository.deleteMcq(firebaseUid, mcq.id)
+            offlineStore.deleteMcq(mcq.id)
+            scheduleAutoSyncIfEligible()
         }
     }
 
     // Study Logs & Revision Diary
     fun addStudyPlanItem(dateKey: String, entryType: String, title: String, subjectName: String?, notes: String?) {
         viewModelScope.launch {
-            repository.addStudyLog(firebaseUid, dateKey, entryType, title, subjectName, completed = entryType == "STUDIED", notes = notes)
+            offlineStore.addStudyLog(dateKey, entryType, title, subjectName, notes)
             _toastEvents.tryEmit("Study item saved!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun toggleStudyLogCompleted(log: StudyLog) {
         viewModelScope.launch {
-            repository.toggleStudyLogCompleted(firebaseUid, log.id, !log.completed)
+            offlineStore.toggleStudyLogCompleted(log.id, !log.completed)
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun deleteStudyLog(logId: String) {
         viewModelScope.launch {
-            repository.deleteStudyLog(firebaseUid, logId)
+            offlineStore.deleteStudyLog(logId)
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun addRevisionDiaryEntry(title: String, subjectName: String?, sourceName: String, content: String, pdfUri: Uri? = null) {
         viewModelScope.launch {
-            val today = StudyRepository.todayKey()
-            val docId = "diary_${StudyRepository.newValidId()}"
+            val today = StudyDateUtils.todayKey()
+            val docId = "diary_${StudyDateUtils.newValidId()}"
             var pdfTitle: String? = null
             var pdfLocalFileName: String? = null
             if (pdfUri != null) {
@@ -861,8 +1119,9 @@ class MainViewModel(
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { _toastEvents.tryEmit(e.message ?: "Could not attach PDF"); return@launch }
             }
-            repository.addRevisionDiaryEntry(firebaseUid, today, title, subjectName, sourceName, content, pdfTitle, pdfLocalFileName, docId)
-                .onSuccess { _toastEvents.tryEmit("रिवीजन डायरी में सेव हो गया!") }
+            offlineStore.addRevisionDiaryEntry(today, title, subjectName, sourceName, content, pdfTitle, pdfLocalFileName, docId)
+            _toastEvents.tryEmit("रिवीजन डायरी में सेव हो गया!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
@@ -885,24 +1144,26 @@ class MainViewModel(
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) { _toastEvents.tryEmit(e.message ?: "Could not attach PDF"); return@launch }
             }
-            repository.updateRevisionDiaryEntry(firebaseUid, entryId, title, subjectName, sourceName, content, finalPdfTitle, finalPdfFileName)
-                .onSuccess { _toastEvents.tryEmit("रिवीजन डायरी अपडेट हो गई!") }
+            offlineStore.updateRevisionDiaryEntry(entryId, title, subjectName, sourceName, content, finalPdfTitle, finalPdfFileName)
+            _toastEvents.tryEmit("रिवीजन डायरी अपडेट हो गई!")
+            scheduleAutoSyncIfEligible()
         }
     }
 
     fun deleteRevisionDiaryEntry(entry: RevisionDiaryEntry) {
         viewModelScope.launch {
             fileStorage.deleteLocalFile(storageOwnerId, entry.pdfLocalFileName)
-            repository.deleteRevisionDiaryEntry(firebaseUid, entry.id)
+            offlineStore.deleteRevisionDiaryEntry(entry.id)
+            scheduleAutoSyncIfEligible()
         }
     }
 
-    // WhatsApp Requests
+    // Support Requests (local log + WhatsApp launch handled by dialog)
     fun recordWhatsAppRequest(requestType: String, subject: String, topic: String, subtopic: String, extraMessage: String) {
         viewModelScope.launch {
-            sharedRepo.submitWhatsAppRequest(
+            adminCatalogStore.submitWhatsAppRequest(
                 WhatsAppRequestRecord(
-                    userId = firebaseUid,
+                    userId = storageOwnerId,
                     studentName = initialDisplayName,
                     studentEmail = signedInEmail.orEmpty(),
                     requestType = requestType,
@@ -915,7 +1176,31 @@ class MainViewModel(
         }
     }
 
-    // Admin Shared Catalog Operations
+    // Student Catalog Sync from Admin Google Drive Share Link
+    fun importSharedCatalogFromUrl(urlOrId: String) {
+        viewModelScope.launch {
+            if (!LocalFileStorage.isOnline(appContext)) {
+                _toastEvents.tryEmit("इंटरनेट कनेक्शन जांचें।")
+                return@launch
+            }
+            driveManager.downloadPublicDriveUrl(urlOrId).onSuccess { bytes ->
+                val raw = String(bytes, Charsets.UTF_8)
+                runCatching {
+                    adminCatalogStore.importPublishedCatalogJson(raw)
+                }.onSuccess {
+                    prefs.setSharedCatalogUrl(urlOrId)
+                    _publishedCatalogLink.value = urlOrId
+                    _toastEvents.tryEmit("Admin Catalog अपडेट हो गया!")
+                }.onFailure { err ->
+                    _toastEvents.tryEmit("Invalid catalog JSON: ${err.message}")
+                }
+            }.onFailure { err ->
+                _toastEvents.tryEmit(err.message ?: "Failed to download Admin Catalog")
+            }
+        }
+    }
+
+    // Admin Shared Catalog Operations (Local + Admin's own Google Drive Shared Catalog)
     fun adminUploadSharedContent(
         subjectId: String,
         topicId: String,
@@ -930,42 +1215,42 @@ class MainViewModel(
     ) {
         if (!isAdminUser) return
         viewModelScope.launch {
-            val docId = existingNote?.id?.takeIf { it.isNotBlank() } ?: "shared_doc_${StudyRepository.newValidId()}"
+            val docId = existingNote?.id?.takeIf { it.isNotBlank() } ?: "shared_doc_${StudyDateUtils.newValidId()}"
             val ext = when (noteType) {
                 NoteType.PDF -> "pdf"; NoteType.HTML -> "html"; NoteType.IMAGE -> "jpg"; NoteType.FOLDER -> "txt"
             }
-            var storagePath = existingNote?.storagePath
             var downloadUrl = existingNote?.downloadUrl
             var localFileName = existingNote?.localFileName
             var htmlText = existingNote?.htmlContent
             var fileSize = existingNote?.fileSizeBytes ?: 0L
 
             if (fileUri != null) {
-                _adminUploadProgress.value = 0.05f
+                _adminUploadProgress.value = 0.1f
                 try {
                     val (displayName, mimeType, bytes) = fileStorage.readUriBytesWithMeta(fileUri, ext)
                     localFileName = "${docId}_$displayName"
                     fileSize = bytes.size.toLong()
+                    File(fileStorage.sharedCacheDir(), localFileName).writeBytes(bytes)
                     if (noteType == NoteType.HTML && bytes.size <= 190_000) {
                         htmlText = String(bytes, Charsets.UTF_8)
                     }
-                    val cloudPath = "shared_materials/$subjectId/$docId/$displayName"
-                    val uploadRes = cloudStorage.uploadSharedFile(cloudPath, bytes, mimeType) { pct ->
-                        _adminUploadProgress.value = pct
-                    }
-                    uploadRes.onSuccess { res ->
-                        storagePath = res.storagePath
-                        downloadUrl = res.downloadUrl
-                        fileSize = res.fileSizeBytes
-                    }.onFailure { err ->
-                        if (noteType == NoteType.HTML && !htmlText.isNullOrBlank()) {
-                            _toastEvents.tryEmit("Storage unavailable (${err.message}); saving HTML directly to Firestore!")
-                        } else {
-                            _adminUploadProgress.value = null
-                            _toastEvents.tryEmit(err.message ?: "Cloud upload failed")
-                            return@launch
+                    _adminUploadProgress.value = 0.45f
+                    val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
+                    if (!token.isNullOrBlank() && LocalFileStorage.isOnline(appContext)) {
+                        driveManager.publishSharedFilePublicReadOnly(
+                            accessToken = token,
+                            fileName = localFileName,
+                            mimeType = mimeType,
+                            bytes = bytes,
+                        ).onSuccess { url ->
+                            downloadUrl = url
+                            fileStorage.saveSharedDownloadRecord(
+                                SharedDownloadRecord(docId, (existingNote?.version ?: 0L) + 1L, localFileName, fileSize, System.currentTimeMillis())
+                            )
+                            _sharedDownloadsMap.value = fileStorage.loadSharedDownloadsMap()
                         }
                     }
+                    _adminUploadProgress.value = 0.9f
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     _adminUploadProgress.value = null
@@ -986,7 +1271,7 @@ class MainViewModel(
                 localFileName = localFileName,
                 htmlContent = htmlText,
                 isShared = true,
-                storagePath = storagePath,
+                storagePath = "Shared Catalog/$localFileName",
                 downloadUrl = downloadUrl,
                 version = nextVersion,
                 published = published,
@@ -994,90 +1279,109 @@ class MainViewModel(
                 fileSizeBytes = fileSize,
                 isMockTest = isMockTest,
             )
-            sharedRepo.upsertSharedContent(noteObj, isNew = existingNote == null)
-                .onSuccess { _toastEvents.tryEmit("Published to all students (v$nextVersion)!") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Failed to save shared item") }
+            adminCatalogStore.upsertSharedContent(noteObj)
+            _toastEvents.tryEmit(
+                if (!downloadUrl.isNullOrBlank()) "Uploaded to Admin Drive & Shared Catalog (v$nextVersion)!"
+                else "Saved to Shared Catalog (v$nextVersion). Tap 'Publish Catalog to Drive' when online!"
+            )
             _adminUploadProgress.value = null
+        }
+    }
+
+    fun adminPublishCatalogToDrive(activity: Activity?) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            val token = obtainDriveToken(activity, actionTag = "PUBLISH_CATALOG") ?: return@launch
+            publishAdminCatalogWithToken(token)
+        }
+    }
+
+    private suspend fun publishAdminCatalogWithToken(token: String) {
+        _driveSyncState.value = DriveSyncUiState.Syncing("Publishing Admin Shared Catalog...")
+        val catalogJson = adminCatalogStore.exportPublishedCatalogJson()
+        driveManager.publishSharedCatalogJsonToDrive(token, catalogJson).onSuccess { url ->
+            prefs.setSharedCatalogUrl(url)
+            _publishedCatalogLink.value = url
+            _driveSyncState.value = DriveSyncUiState.Synced(System.currentTimeMillis(), "Shared Catalog Published")
+            _toastEvents.tryEmit("Shared Catalog Drive पर पब्लिश हो गया! लिंक कॉपी के लिए तैयार है।")
+        }.onFailure { err ->
+            _driveSyncState.value = DriveSyncUiState.Error(err.message ?: "Publish failed")
+            _toastEvents.tryEmit(err.message ?: "Publish failed")
         }
     }
 
     fun adminToggleSharedContentPublished(note: StudyNote) {
         if (!isAdminUser) return
         viewModelScope.launch {
-            sharedRepo.toggleSharedContentPublished(note.id, note.title, !note.published)
-                .onSuccess { _toastEvents.tryEmit(if (!note.published) "Published" else "Unpublished (Draft)") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Failed") }
+            adminCatalogStore.toggleSharedContentPublished(note.id, !note.published)
+            _toastEvents.tryEmit(if (!note.published) "Published" else "Unpublished (Draft)")
         }
     }
 
     fun adminDeleteSharedContent(note: StudyNote) {
         if (!isAdminUser) return
         viewModelScope.launch {
-            cloudStorage.deleteStorageObject(note.storagePath)
-            sharedRepo.deleteSharedContent(note.id)
-                .onSuccess { _toastEvents.tryEmit("Deleted shared item '${note.title}'") }
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Delete failed") }
+            adminCatalogStore.deleteSharedContent(note.id)
+            _toastEvents.tryEmit("Deleted shared item '${note.title}'")
         }
     }
 
     fun adminUpsertSharedTopic(subjectId: String, name: String, description: String?) {
         if (!isAdminUser) return
         viewModelScope.launch {
-            sharedRepo.upsertSharedTopic(Topic(subjectId = subjectId, name = name, description = description, isShared = true, published = true))
-                .onSuccess { _toastEvents.tryEmit("Shared Topic created!") }
+            adminCatalogStore.upsertSharedTopic(subjectId, name, description)
+            _toastEvents.tryEmit("Shared Topic created!")
         }
     }
 
     fun adminDeleteSharedTopic(topicId: String) {
         if (!isAdminUser) return
-        viewModelScope.launch { sharedRepo.deleteSharedTopic(topicId) }
+        viewModelScope.launch { adminCatalogStore.deleteSharedTopic(topicId) }
     }
 
     fun adminUpsertSharedSubtopic(subjectId: String, topicId: String, name: String) {
         if (!isAdminUser) return
         viewModelScope.launch {
-            sharedRepo.upsertSharedSubtopic(Subtopic(subjectId = subjectId, topicId = topicId, name = name, isShared = true, published = true))
-                .onSuccess { _toastEvents.tryEmit("Shared Sub-topic created!") }
+            adminCatalogStore.upsertSharedSubtopic(subjectId, topicId, name)
+            _toastEvents.tryEmit("Shared Sub-topic created!")
         }
     }
 
     fun adminDeleteSharedSubtopic(subtopicId: String) {
         if (!isAdminUser) return
-        viewModelScope.launch { sharedRepo.deleteSharedSubtopic(subtopicId) }
+        viewModelScope.launch { adminCatalogStore.deleteSharedSubtopic(subtopicId) }
     }
 
     fun adminUpdateWhatsAppRequestStatus(requestId: String, status: String) {
         if (!isAdminUser) return
         viewModelScope.launch {
-            sharedRepo.updateWhatsAppRequestStatus(requestId, status)
-                .onSuccess { _toastEvents.tryEmit("Request marked $status") }
+            adminCatalogStore.updateWhatsAppRequestStatus(requestId, status)
+            _toastEvents.tryEmit("Request marked $status")
         }
     }
 
     fun adminLoadStudentResults(studentUid: String, onLoaded: (List<TestResult>) -> Unit) {
         if (!isAdminUser) return
-        viewModelScope.launch {
-            sharedRepo.fetchStudentTestResultsForAdmin(studentUid)
-                .onSuccess(onLoaded)
-                .onFailure { _toastEvents.tryEmit(it.message ?: "Failed to load student results") }
-        }
+        onLoaded(adminCatalogStore.getStudentResults(studentUid))
     }
 
-    private fun syncStudentAnalyticsSummary(extraAttempt: Boolean = false) {
-        viewModelScope.launch {
-            val results = (testResultsState.value as? UiState.Success)?.data ?: emptyList()
-            val count = results.size.toLong() + (if (extraAttempt && results.isEmpty()) 1L else 0L)
-            val avg = if (results.isNotEmpty()) results.map { it.percentage }.average() else 0.0
-            sharedRepo.upsertStudentSummary(
-                uid = firebaseUid,
+    private suspend fun syncStudentAnalyticsSummary() {
+        val results = offlineStore.testResults.value
+        val avg = if (results.isNotEmpty()) results.map { it.percentage }.average() else 0.0
+        adminCatalogStore.upsertStudentSummary(
+            summary = StudentSummary(
+                id = storageOwnerId,
+                userId = storageOwnerId,
                 displayName = initialDisplayName,
                 email = signedInEmail.orEmpty(),
                 photoUrl = initialPhotoUrl,
                 downloadsCount = _sharedDownloadsMap.value.size.toLong(),
-                testAttemptsCount = count,
+                testAttemptsCount = results.size.toLong(),
                 averageScorePct = avg,
-            )
-        }
+                lastActiveMillis = System.currentTimeMillis(),
+            ),
+            latestResults = results,
+        )
     }
 
     companion object {

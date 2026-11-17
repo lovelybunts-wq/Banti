@@ -1,5 +1,9 @@
 package com.example.ui.auth
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Fingerprint
 import androidx.compose.material.icons.rounded.Quiz
 import androidx.compose.material3.Button
@@ -30,9 +35,9 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,35 +55,56 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.credentials.CredentialManager
 import com.example.R
 import com.example.auth.GoogleAuthHelper
+import com.example.auth.GoogleSessionUser
+import com.example.auth.GoogleSignInResult
+import com.example.data.local.UserPreferencesManager
+import com.example.data.remote.GoogleDriveBackupManager
 import com.example.ui.components.LearnTalentBrandHeader
 import com.example.ui.components.Tactile3DCard
 import com.example.ui.components.TactileIconOrb
 import com.example.ui.theme.LocalStudyTheme
-import com.google.firebase.auth.FirebaseUser
+import kotlinx.coroutines.launch
 
 @Composable
 fun AuthScreen(
-    onAuthSuccess: (FirebaseUser?) -> Unit,
+    onSignedIn: (GoogleSessionUser, accessToken: String?) -> Unit,
+    onContinueOffline: () -> Unit,
 ) {
     val context = LocalContext.current
+    val activity = context as? Activity
     val scope = rememberCoroutineScope()
-    val credentialManager = remember { CredentialManager.create(context) }
+    val driveManager = remember { GoogleDriveBackupManager() }
+    val prefs = remember { UserPreferencesManager(context.applicationContext) }
     val theme = LocalStudyTheme.current
 
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(Unit) {
-        GoogleAuthHelper.attemptAutoSignIn(
-            context = context,
-            credentialManager = credentialManager,
-            onAuthSuccess = { user -> onAuthSuccess(user) },
-            onUnauthenticated = {},
-            scope = scope
-        )
+    val intentSenderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (activity == null) {
+            isLoading = false
+            errorMessage = "Activity unavailable for Google login."
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            when (val res = GoogleAuthHelper.completeSignInFromIntent(activity, result.data, driveManager, prefs)) {
+                is GoogleSignInResult.Success -> {
+                    isLoading = false
+                    onSignedIn(res.session, res.accessToken)
+                }
+                is GoogleSignInResult.Error -> {
+                    isLoading = false
+                    errorMessage = res.message
+                }
+                is GoogleSignInResult.NeedsConsentUi -> {
+                    isLoading = false
+                }
+            }
+        }
     }
 
     Box(
@@ -103,11 +129,11 @@ fun AuthScreen(
         ) {
             LearnTalentBrandHeader(
                 customLogoFile = null,
-                subtitle = "सीमित सोर्स • बार-बार रिवीजन • ऑनलाइन सिंक",
+                subtitle = "ऑफलाइन पढ़ाई + अपनी Gmail Google Drive में स्थायी सेव",
                 logoSize = 52.dp
             )
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(16.dp))
 
             Tactile3DCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -119,7 +145,7 @@ fun AuthScreen(
                     contentDescription = "Learn Talent study desk illustration",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(165.dp)
+                        .height(158.dp)
                         .clip(RoundedCornerShape(14.dp)),
                     contentScale = ContentScale.Crop
                 )
@@ -140,12 +166,12 @@ fun AuthScreen(
                 )
                 FeatureRow(
                     icon = Icons.Rounded.CloudDone,
-                    title = "Direct Online Google Sync",
-                    subtitle = "अपनी Gmail ID से लॉगिन करें — सारा डेटा अपने आप आपकी ID में सेव रहेगा"
+                    title = "Google Drive Cloud Storage (LEARN TALENT Folder)",
+                    subtitle = "अपनी Gmail ID से लॉगिन करें — सारा डेटा आपकी Drive में सेव व रीस्टोर होगा"
                 )
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(18.dp))
 
             if (errorMessage != null) {
                 Text(
@@ -153,30 +179,35 @@ fun AuthScreen(
                     color = theme.error,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(bottom = 12.dp)
+                    modifier = Modifier.padding(bottom = 10.dp)
                 )
             }
 
             Button(
                 onClick = {
+                    if (activity == null) {
+                        errorMessage = "Google Sign-In के लिए Activity उपलब्ध नहीं है।"
+                        return@Button
+                    }
                     errorMessage = null
                     isLoading = true
-                    GoogleAuthHelper.onGoogleSignInClicked(
-                        context = context,
-                        credentialManager = credentialManager,
-                        onAuthSuccess = { user ->
-                            isLoading = false
-                            onAuthSuccess(user)
-                        },
-                        onAuthError = { msg ->
-                            isLoading = false
-                            errorMessage = msg
-                        },
-                        scope = scope,
-                        onAuthCancelled = {
-                            isLoading = false
+                    scope.launch {
+                        when (val res = GoogleAuthHelper.startGoogleSignIn(activity, driveManager, prefs)) {
+                            is GoogleSignInResult.Success -> {
+                                isLoading = false
+                                onSignedIn(res.session, res.accessToken)
+                            }
+                            is GoogleSignInResult.NeedsConsentUi -> {
+                                intentSenderLauncher.launch(
+                                    IntentSenderRequest.Builder(res.intentSender).build()
+                                )
+                            }
+                            is GoogleSignInResult.Error -> {
+                                isLoading = false
+                                errorMessage = res.message
+                            }
                         }
-                    )
+                    }
                 },
                 enabled = !isLoading,
                 shape = RoundedCornerShape(16.dp),
@@ -203,10 +234,41 @@ fun AuthScreen(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = stringResource(R.string.sign_in_google),
+                        text = "${stringResource(R.string.sign_in_google)} (Drive Sync)",
                         style = MaterialTheme.typography.labelLarge
                     )
                 }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            OutlinedButton(
+                onClick = {
+                    errorMessage = null
+                    scope.launch {
+                        prefs.setOfflineModeAccepted(true)
+                        onContinueOffline()
+                    }
+                },
+                enabled = !isLoading,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .testTag("continue_offline_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.CloudOff,
+                    contentDescription = null,
+                    tint = theme.secondary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Continue Offline (ऑफलाइन शुरू करें • बाद में Sync करें)",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = theme.primary
+                )
             }
         }
     }

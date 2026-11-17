@@ -1,6 +1,10 @@
 package com.example.ui
 
+import android.app.Activity
 import android.app.Application
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -53,6 +57,9 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.R
 import com.example.auth.GoogleAuthHelper
+import com.example.auth.GoogleSessionUser
+import com.example.auth.GoogleSignInResult
+import com.example.data.local.LocalAdminCatalogStore
 import com.example.data.local.LocalAppSettings
 import com.example.data.local.LocalFileStorage
 import com.example.data.local.LocalOfflineStore
@@ -62,9 +69,7 @@ import com.example.data.model.FullLengthExamDefaults
 import com.example.data.model.NoteType
 import com.example.data.model.StudyNote
 import com.example.data.model.UiState
-import com.example.data.remote.CloudStorageService
-import com.example.data.remote.SharedCatalogRepository
-import com.example.data.remote.StudyRepository
+import com.example.data.remote.GoogleDriveBackupManager
 import com.example.ui.auth.AuthScreen
 import com.example.ui.components.WhatsAppRequestDialog
 import com.example.ui.navigation.AdminPanelRoute
@@ -102,23 +107,7 @@ import com.example.ui.screens.TopicsScreen
 import com.example.ui.security.BiometricLockScreen
 import com.example.ui.theme.LearnTalentTheme
 import com.example.ui.theme.LocalStudyTheme
-import com.google.firebase.Firebase
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.auth.auth
-import com.google.firebase.firestore.FirebaseFirestore
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
-
-internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
-    trySend(currentUser)
-    val listener = FirebaseAuth.AuthStateListener { auth -> trySend(auth.currentUser) }
-    addAuthStateListener(listener)
-    awaitClose { removeAuthStateListener(listener) }
-}
 
 private data class WhatsAppRequestPrefill(
     val subject: String = "",
@@ -133,37 +122,40 @@ fun LearnTalentApp(isCompactWidth: Boolean) {
     val prefs = remember { UserPreferencesManager(context.applicationContext) }
     val localSettings by prefs.settingsFlow.collectAsStateWithLifecycle(initialValue = LocalAppSettings())
 
-    val firebaseReady = remember { GoogleAuthHelper.isFirebaseInitialized(context) }
-    val authFlowUser by remember(firebaseReady) {
-        if (firebaseReady) Firebase.auth.authStateFlow() else flowOf(null)
-    }.collectAsStateWithLifecycle(initialValue = GoogleAuthHelper.safeCurrentUser(context))
+    var activeDriveToken by remember { mutableStateOf<String?>(null) }
+    var forcedOfflineOverride by remember { mutableStateOf(false) }
 
-    var manualSignedInUser by remember { mutableStateOf<FirebaseUser?>(null) }
-    val user = authFlowUser ?: manualSignedInUser
+    val sessionUser = remember(localSettings, forcedOfflineOverride) {
+        if (forcedOfflineOverride) GoogleAuthHelper.offlineSession()
+        else GoogleAuthHelper.sessionFromSettings(localSettings)
+    }
 
     LearnTalentTheme(themeOption = localSettings.themeOption) {
-        if (user == null) {
+        if (sessionUser == null) {
             AuthScreen(
-                onAuthSuccess = { signedInUser ->
-                    manualSignedInUser = signedInUser ?: GoogleAuthHelper.safeCurrentUser(context)
+                onSignedIn = { _, token ->
+                    forcedOfflineOverride = false
+                    activeDriveToken = token
+                },
+                onContinueOffline = {
+                    forcedOfflineOverride = true
                 }
             )
         } else {
-            val resolvedDisplayName = GoogleAuthHelper.resolveDisplayName(user)
-            val resolvedEmail = GoogleAuthHelper.resolveEmail(user)
-            val resolvedPhotoUrl = GoogleAuthHelper.resolvePhotoUrl(user)
-            key(user.uid) {
+            key(sessionUser.uid) {
                 AuthenticatedAppContent(
-                    firebaseUid = user.uid,
-                    signedInEmail = resolvedEmail,
-                    displayName = resolvedDisplayName,
-                    photoUrl = resolvedPhotoUrl,
+                    sessionUser = sessionUser,
+                    initialDriveToken = activeDriveToken,
                     isCompactWidth = isCompactWidth,
+                    onSignedInUpdated = { _, token ->
+                        forcedOfflineOverride = false
+                        activeDriveToken = token
+                    },
                     onSignedOutResetSession = {
-                        manualSignedInUser = null
+                        forcedOfflineOverride = false
+                        activeDriveToken = null
                         scope.launch {
-                            prefs.clearDriveUserSession()
-                            prefs.setOfflineModeAccepted(false)
+                            GoogleAuthHelper.signOut(context.applicationContext, prefs, returnToAuthScreen = true)
                         }
                     }
                 )
@@ -174,42 +166,41 @@ fun LearnTalentApp(isCompactWidth: Boolean) {
 
 @Composable
 private fun AuthenticatedAppContent(
-    firebaseUid: String,
-    signedInEmail: String?,
-    displayName: String,
-    photoUrl: String?,
+    sessionUser: GoogleSessionUser,
+    initialDriveToken: String?,
     isCompactWidth: Boolean,
+    onSignedInUpdated: (GoogleSessionUser, String?) -> Unit,
     onSignedOutResetSession: () -> Unit,
 ) {
     val context = LocalContext.current
+    val activity = context as? Activity
+    val scope = rememberCoroutineScope()
     val fileStorage = remember { LocalFileStorage(context.applicationContext) }
-    val isAdminUser = signedInEmail.equals(UserPreferencesManager.ADMIN_EMAIL, ignoreCase = true)
+    val prefs = remember { UserPreferencesManager(context.applicationContext) }
+    val driveManager = remember { GoogleDriveBackupManager() }
 
     val viewModel: MainViewModel = viewModel(
-        key = firebaseUid,
+        key = sessionUser.uid,
         factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[APPLICATION_KEY]) { "APPLICATION_KEY missing" } as Application
-                val db = FirebaseFirestore.getInstance(app.getString(R.string.firestore_database_id))
                 MainViewModel(
                     appContext = app.applicationContext,
-                    repository = StudyRepository(db),
-                    sharedRepo = SharedCatalogRepository(db),
-                    cloudStorage = CloudStorageService(app.applicationContext),
-                    offlineStore = LocalOfflineStore(app.applicationContext, ownerId = firebaseUid),
+                    offlineStore = LocalOfflineStore(app.applicationContext, ownerId = sessionUser.uid),
+                    adminCatalogStore = LocalAdminCatalogStore(app.applicationContext),
+                    driveManager = GoogleDriveBackupManager(),
                     fileStorage = LocalFileStorage(app.applicationContext),
                     prefs = UserPreferencesManager(app.applicationContext),
-                    firebaseUid = firebaseUid,
-                    initialDisplayName = displayName,
-                    signedInEmail = signedInEmail,
-                    initialPhotoUrl = photoUrl,
+                    sessionUser = sessionUser,
+                    initialDriveToken = initialDriveToken,
                 )
             }
         }
     )
 
+    val isAdminUser = viewModel.isAdminUser
     val localSettings by viewModel.localSettings.collectAsStateWithLifecycle()
-    var isVaultUnlocked by rememberSaveable(firebaseUid) { mutableStateOf(false) }
+    var isVaultUnlocked by rememberSaveable(sessionUser.uid) { mutableStateOf(false) }
 
     if (localSettings.biometricLockEnabled && !isVaultUnlocked) {
         BiometricLockScreen(customLogoFile = null, onUnlocked = { isVaultUnlocked = true })
@@ -220,6 +211,63 @@ private fun AuthenticatedAppContent(
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     var whatsAppPrefill by remember { mutableStateOf<WhatsAppRequestPrefill?>(null) }
+
+    // Consent IntentSender launcher for Google Drive Sync / Restore / Admin Publish
+    val driveConsentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { res ->
+        if (activity != null) {
+            viewModel.onConsentIntentResult(activity, res.data)
+        }
+    }
+
+    // Account Sign-In / Switch IntentSender launcher (used when upgrading from Offline -> Gmail or Switching Gmail)
+    val accountSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { res ->
+        if (activity == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            when (val out = GoogleAuthHelper.completeSignInFromIntent(activity, res.data, driveManager, prefs)) {
+                is GoogleSignInResult.Success -> {
+                    onSignedInUpdated(out.session, out.accessToken)
+                    viewModel.showToast("Signed in as ${out.session.email} — syncing Drive...")
+                }
+                is GoogleSignInResult.Error -> viewModel.showToast(out.message)
+                is GoogleSignInResult.NeedsConsentUi -> Unit
+            }
+        }
+    }
+
+    fun launchInteractiveGoogleSignIn(switchAccountFirst: Boolean) {
+        if (activity == null) {
+            viewModel.showToast("Google Sign-In के लिए Activity उपलब्ध नहीं है।")
+            return
+        }
+        scope.launch {
+            if (switchAccountFirst) {
+                GoogleAuthHelper.signOut(context.applicationContext, prefs, returnToAuthScreen = false)
+            }
+            when (val res = GoogleAuthHelper.startGoogleSignIn(activity, driveManager, prefs)) {
+                is GoogleSignInResult.Success -> {
+                    onSignedInUpdated(res.session, res.accessToken)
+                    viewModel.showToast("Gmail लॉगिन सफल: ${res.session.email}")
+                }
+                is GoogleSignInResult.NeedsConsentUi -> {
+                    accountSignInLauncher.launch(IntentSenderRequest.Builder(res.intentSender).build())
+                }
+                is GoogleSignInResult.Error -> {
+                    viewModel.showToast(res.message)
+                }
+            }
+        }
+    }
+
+    val pendingConsentSender by viewModel.pendingConsentSender.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingConsentSender) {
+        val sender = pendingConsentSender ?: return@LaunchedEffect
+        viewModel.clearPendingConsentSender()
+        driveConsentLauncher.launch(IntentSenderRequest.Builder(sender).build())
+    }
 
     LaunchedEffect(viewModel) {
         viewModel.toastEvents.collect { snackbarHostState.showSnackbar(it) }
@@ -242,6 +290,8 @@ private fun AuthenticatedAppContent(
     val sharedDownloadProgress by viewModel.sharedDownloadProgress.collectAsStateWithLifecycle()
     val profileState by viewModel.profileState.collectAsStateWithLifecycle()
     val lastReturnedScore by viewModel.lastReturnedScore.collectAsStateWithLifecycle()
+    val driveSyncState by viewModel.driveSyncState.collectAsStateWithLifecycle()
+    val publishedCatalogLink by viewModel.publishedCatalogLink.collectAsStateWithLifecycle()
 
     val subjects = (subjectsState as? UiState.Success)?.data ?: emptyList()
     val topics = (topicsState as? UiState.Success)?.data ?: emptyList()
@@ -255,7 +305,9 @@ private fun AuthenticatedAppContent(
     val bookmarks = (bookmarksState as? UiState.Success)?.data ?: emptyList()
     val profile = (profileState as? UiState.Success)?.data
 
-    val resolvedStudentName = profile?.displayName?.trim()?.takeIf { it.isNotBlank() && it != "Learner" } ?: displayName
+    val resolvedStudentName = profile?.displayName?.trim()?.takeIf {
+        it.isNotBlank() && it != "Learner" && it != "Offline Learner"
+    } ?: sessionUser.displayName
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDest = navBackStackEntry?.destination
@@ -356,8 +408,14 @@ private fun AuthenticatedAppContent(
                             recentActivities = recentActivities,
                             profileState = profileState,
                             displayName = resolvedStudentName,
-                            photoUrl = photoUrl,
+                            photoUrl = sessionUser.photoUrl,
                             isAdminUser = isAdminUser,
+                            isOfflineAccount = sessionUser.isOffline,
+                            driveSyncState = driveSyncState,
+                            onSignInOrSyncNow = {
+                                if (sessionUser.isOffline) launchInteractiveGoogleSignIn(switchAccountFirst = false)
+                                else viewModel.triggerSyncNow(activity)
+                            },
                             onToggleLightDark = { viewModel.toggleLightDarkTheme() },
                             onSubjectClick = { navController.navigate(TopicsRoute(it.id)) },
                             onOpenFullLengthTests = { navController.navigate(FullLengthExamsRoute) },
@@ -620,7 +678,7 @@ private fun AuthenticatedAppContent(
                         PersonalNotesScreen(
                             notes = personalNotes, subjects = subjects,
                             initialSubjectId = route.subjectId, initialNoteId = route.noteId,
-                            userFilesDir = fileStorage.userDir(firebaseUid),
+                            userFilesDir = fileStorage.userDir(sessionUser.uid),
                             onSaveNote = { viewModel.upsertPersonalNote(it) },
                             onDeleteNote = { viewModel.deletePersonalNote(it) },
                             onAttachImage = { nId, uri, cb -> viewModel.copyPersonalNoteImage(nId, uri, cb) },
@@ -665,6 +723,8 @@ private fun AuthenticatedAppContent(
                             allSubtopics = if (adminSubtopics.isNotEmpty()) adminSubtopics else subtopics,
                             sharedContent = adminContent, students = studentSummaries, requests = adminRequests,
                             uploadProgress = uploadProgress, currentWhatsAppDigits = localSettings.adminWhatsAppNumber,
+                            publishedCatalogLink = publishedCatalogLink,
+                            onPublishCatalogToDrive = { viewModel.adminPublishCatalogToDrive(activity) },
                             onUploadSharedContent = { sId, tId, stId, fold, title, type, isTest, uri, pub, existing ->
                                 viewModel.adminUploadSharedContent(sId, tId, stId, fold, title, type, isTest, uri, pub, existing)
                             },
@@ -702,11 +762,19 @@ private fun AuthenticatedAppContent(
                     composable<SettingsRoute> {
                         SettingsScreen(
                             localSettings = localSettings,
-                            signedInEmail = signedInEmail,
+                            signedInEmail = sessionUser.email.takeIf { it.isNotBlank() },
                             signedInName = resolvedStudentName,
-                            signedInPhotoUrl = photoUrl,
-                            uidLabel = firebaseUid,
+                            signedInPhotoUrl = sessionUser.photoUrl,
+                            uidLabel = sessionUser.uid,
+                            isOfflineAccount = sessionUser.isOffline,
                             isAdminUser = isAdminUser,
+                            driveSyncState = driveSyncState,
+                            onSignInWithGoogle = { launchInteractiveGoogleSignIn(switchAccountFirst = false) },
+                            onSwitchGoogleAccount = { launchInteractiveGoogleSignIn(switchAccountFirst = true) },
+                            onSyncNow = { viewModel.triggerSyncNow(activity) },
+                            onRestoreFromDrive = { viewModel.triggerRestoreFromDrive(activity) },
+                            onToggleAutoSync = { viewModel.setAutoSyncEnabled(it) },
+                            onLoadSharedCatalogUrl = { viewModel.importSharedCatalogFromUrl(it) },
                             onToggleLightDark = { viewModel.toggleLightDarkTheme() },
                             onSelectTheme = { viewModel.selectTheme(it) },
                             onToggleBiometricLock = { viewModel.setBiometricLockEnabled(it) },
