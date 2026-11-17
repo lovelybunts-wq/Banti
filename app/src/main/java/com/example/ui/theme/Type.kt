@@ -22,6 +22,13 @@ val PlusJakartaFontFamily = FontFamily(
     Font(R.font.plus_jakarta_sans, FontWeight.Bold),
 )
 
+val NotoSansDevanagariFontFamily = FontFamily(
+    Font(R.font.noto_sans_devanagari, FontWeight.Normal),
+    Font(R.font.noto_sans_devanagari, FontWeight.Medium),
+    Font(R.font.noto_sans_devanagari, FontWeight.SemiBold),
+    Font(R.font.noto_sans_devanagari, FontWeight.Bold),
+)
+
 val JetBrainsMonoFontFamily = FontFamily(
     Font(R.font.jetbrains_mono, FontWeight.Normal),
     Font(R.font.jetbrains_mono, FontWeight.Medium),
@@ -34,13 +41,14 @@ val AppTypography = Typography(
         fontWeight = FontWeight.Bold,
         fontSize = 30.sp,
         lineHeight = 36.sp,
-        letterSpacing = (-0.3).sp
+        letterSpacing = (-0.4).sp
     ),
     headlineMedium = TextStyle(
         fontFamily = OutfitFontFamily,
         fontWeight = FontWeight.Bold,
         fontSize = 24.sp,
         lineHeight = 30.sp,
+        letterSpacing = (-0.2).sp
     ),
     headlineSmall = TextStyle(
         fontFamily = OutfitFontFamily,
@@ -50,7 +58,7 @@ val AppTypography = Typography(
     ),
     titleLarge = TextStyle(
         fontFamily = OutfitFontFamily,
-        fontWeight = FontWeight.SemiBold,
+        fontWeight = FontWeight.Bold,
         fontSize = 18.sp,
         lineHeight = 24.sp,
     ),
@@ -62,7 +70,7 @@ val AppTypography = Typography(
     ),
     titleSmall = TextStyle(
         fontFamily = PlusJakartaFontFamily,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 14.sp,
         lineHeight = 20.sp,
     ),
@@ -82,7 +90,7 @@ val AppTypography = Typography(
         fontFamily = PlusJakartaFontFamily,
         fontWeight = FontWeight.Normal,
         fontSize = 12.sp,
-        lineHeight = 16.sp,
+        lineHeight = 17.sp,
     ),
     labelLarge = TextStyle(
         fontFamily = PlusJakartaFontFamily,

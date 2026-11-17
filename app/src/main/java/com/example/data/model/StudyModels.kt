@@ -380,6 +380,28 @@ data class FullLengthExam(
     val updatedAt: StudyTimestamp? = null,
 )
 
+@Keep
+@Serializable
+data class StudentUploadSubmission(
+    val id: String = "",
+    val studentUid: String = "",
+    val studentName: String = "",
+    val studentEmail: String = "",
+    val subjectId: String = "",
+    val topicId: String = "",
+    val subtopicId: String = "",
+    val folderName: String = "",
+    val title: String = "",
+    val noteType: String = NoteType.PDF.name,
+    val isMockTest: Boolean = false,
+    val localFileName: String? = null,
+    val htmlContent: String? = null,
+    val downloadUrl: String? = null,
+    val fileSizeBytes: Long = 0L,
+    val status: String = "PENDING_APPROVAL",
+    val submittedAtMillis: Long = System.currentTimeMillis(),
+)
+
 object FullLengthExamDefaults {
     const val SUBJECT_ID = "full_length_exam"
     const val SUBTOPIC_ID = "full_length_html"

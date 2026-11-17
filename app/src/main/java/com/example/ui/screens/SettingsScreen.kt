@@ -83,6 +83,10 @@ fun SettingsScreen(
     uidLabel: String,
     isOfflineAccount: Boolean,
     isAdminUser: Boolean,
+    isNetworkOnline: Boolean = true,
+    pendingSyncCount: Int = 0,
+    studentAttemptsCount: Int = 0,
+    studentAveragePct: Double = 0.0,
     driveSyncState: DriveSyncUiState,
     onSignInWithGoogle: () -> Unit,
     onSwitchGoogleAccount: () -> Unit,
@@ -145,7 +149,7 @@ fun SettingsScreen(
                             StudentAvatar(photoUrl = signedInPhotoUrl, displayName = signedInName, size = 56.dp)
                             Spacer(Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Text(
                                         text = signedInName.ifBlank { "Student" },
                                         style = MaterialTheme.typography.titleMedium,
@@ -155,13 +159,17 @@ fun SettingsScreen(
                                         text = when {
                                             isOfflineAccount -> "OFFLINE"
                                             isAdminUser -> "ADMIN"
-                                            else -> "GOOGLE DRIVE"
+                                            else -> "STUDENT"
                                         },
                                         color = when {
                                             isOfflineAccount -> theme.secondary
                                             isAdminUser -> theme.tertiary
                                             else -> theme.success
                                         }
+                                    )
+                                    Tactile3DBadge(
+                                        text = if (isNetworkOnline) "ONLINE" else "OFFLINE",
+                                        color = if (isNetworkOnline) theme.success else theme.secondary
                                     )
                                 }
                                 Text(
@@ -171,7 +179,7 @@ fun SettingsScreen(
                                     color = theme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = "Vault ID: ${uidLabel.take(18)}",
+                                    text = "Vault ID: ${uidLabel.take(18)} • Tests: $studentAttemptsCount (Avg ${com.example.ui.MainViewModel.formatNum(studentAveragePct)}%)",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = theme.onSurfaceVariant
                                 )
@@ -254,10 +262,18 @@ fun SettingsScreen(
                             }
                         } else {
                             Text(
-                                text = "Google Drive Folder: LEARN TALENT / Student Profile • Exam Results • Test History • Notes • Bookmarks • Progress Reports",
+                                text = if (isAdminUser) {
+                                    "Google Drive: LEARN TALENT/ADMIN/ (PUBLISHED TESTS • PDF NOTES • STUDY MATERIAL • SUBJECTS) & STUDENTS/"
+                                } else {
+                                    "Google Drive: LEARN TALENT/STUDENTS/ (STUDENT DATA • TEST RESULTS • PROGRESS REPORTS • PERSONAL UPLOADS)"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = theme.onSurfaceVariant
                             )
+                            if (pendingSyncCount > 0) {
+                                Spacer(Modifier.height(4.dp))
+                                Tactile3DBadge(text = "$pendingSyncCount changes queued for sync", color = theme.tertiary)
+                            }
                             Spacer(Modifier.height(8.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                                 Button(

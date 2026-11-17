@@ -27,6 +27,8 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PublishedWithChanges
 import androidx.compose.material.icons.rounded.Refresh
@@ -65,6 +67,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.example.data.model.NoteType
 import com.example.data.model.StudentSummary
+import com.example.data.model.StudentUploadSubmission
 import com.example.data.model.StudyNote
 import com.example.data.model.Subject
 import com.example.data.model.Subtopic
@@ -88,17 +91,28 @@ fun AdminPanelScreen(
     uploadProgress: Float?,
     currentWhatsAppDigits: String,
     publishedCatalogLink: String?,
+    allowStudentUploads: Boolean = true,
+    pendingSubmissions: List<StudentUploadSubmission> = emptyList(),
     onPublishCatalogToDrive: () -> Unit,
     onUploadSharedContent: (
         subjectId: String, topicId: String, subtopicId: String, folderName: String,
         title: String, noteType: NoteType, isMockTest: Boolean, fileUri: Uri?, published: Boolean, existingNote: StudyNote?
     ) -> Unit,
+    onBatchUploadSharedContent: (
+        subjectId: String, topicId: String, subtopicId: String, folderName: String,
+        noteType: NoteType, isMockTest: Boolean, uris: List<Uri>, published: Boolean
+    ) -> Unit = { _, _, _, _, _, _, _, _ -> },
+    onEditSharedContent: (note: StudyNote, newTitle: String, newFolderName: String, isMockTest: Boolean, published: Boolean) -> Unit = { _, _, _, _, _ -> },
     onTogglePublished: (StudyNote) -> Unit,
     onDeleteSharedContent: (StudyNote) -> Unit,
     onPreviewSharedNote: (StudyNote) -> Unit,
+    onAddSharedSubject: (nameEn: String, nameHi: String?, iconKey: String, colorHex: String) -> Unit = { _, _, _, _ -> },
     onAddSharedTopic: (subjectId: String, name: String, desc: String?) -> Unit,
     onAddSharedSubtopic: (subjectId: String, topicId: String, name: String) -> Unit,
     onLoadStudentResults: (studentUid: String, onLoaded: (List<TestResult>) -> Unit) -> Unit,
+    onToggleAllowStudentUploads: (Boolean) -> Unit = {},
+    onApproveSubmission: (String) -> Unit = {},
+    onRejectSubmission: (String) -> Unit = {},
     onSaveWhatsAppDigits: (String) -> Unit,
     onUpdateWhatsAppRequestStatus: (String, String) -> Unit,
     onBack: () -> Unit,
@@ -122,28 +136,48 @@ fun AdminPanelScreen(
     }
 
     var selectedTab by remember { mutableIntStateOf(0) }
+    val pendingApprovalCount = remember(pendingSubmissions) {
+        pendingSubmissions.count { it.status == "PENDING_APPROVAL" }
+    }
 
     Scaffold(
         containerColor = theme.background,
         topBar = {
             TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = theme.background, titleContentColor = theme.onBackground),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = com.example.ui.theme.BrandColors.DeepNavy,
+                    titleContentColor = com.example.ui.theme.BrandColors.PureWhite,
+                    navigationIconContentColor = com.example.ui.theme.BrandColors.PureWhite
+                ),
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.testTag("admin_back_btn")) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
                     }
                 },
-                title = { Text("Admin Control Center", style = MaterialTheme.typography.titleLarge, color = theme.tertiary) }
+                title = {
+                    Column {
+                        Text("Admin Control Center", style = MaterialTheme.typography.titleLarge, color = com.example.ui.theme.BrandColors.PureWhite)
+                        Text("LEARN TALENT • Super Admin Workspace", style = MaterialTheme.typography.labelSmall, color = com.example.ui.theme.BrandColors.PremiumGold)
+                    }
+                }
             )
         }
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding), contentAlignment = Alignment.TopCenter) {
             Column(modifier = Modifier.widthIn(max = 980.dp).fillMaxSize()) {
-                TabRow(selectedTabIndex = selectedTab, containerColor = theme.background, contentColor = theme.tertiary) {
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = theme.surface,
+                    contentColor = theme.primary
+                ) {
                     Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Analytics") })
                     Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Upload & Manage") })
                     Tab(selected = selectedTab == 2, onClick = { selectedTab = 2 }, text = { Text("Students") })
-                    Tab(selected = selectedTab == 3, onClick = { selectedTab = 3 }, text = { Text("Requests") })
+                    Tab(
+                        selected = selectedTab == 3,
+                        onClick = { selectedTab = 3 },
+                        text = { Text(if (pendingApprovalCount > 0) "Requests ($pendingApprovalCount)" else "Requests") }
+                    )
                 }
 
                 when (selectedTab) {
@@ -153,14 +187,25 @@ fun AdminPanelScreen(
                         sharedContent = sharedContent, uploadProgress = uploadProgress,
                         publishedCatalogLink = publishedCatalogLink,
                         onPublishCatalogToDrive = onPublishCatalogToDrive,
-                        onUploadSharedContent = onUploadSharedContent, onTogglePublished = onTogglePublished,
+                        onUploadSharedContent = onUploadSharedContent,
+                        onBatchUploadSharedContent = onBatchUploadSharedContent,
+                        onEditSharedContent = onEditSharedContent,
+                        onTogglePublished = onTogglePublished,
                         onDeleteSharedContent = onDeleteSharedContent, onPreviewSharedNote = onPreviewSharedNote,
+                        onAddSharedSubject = onAddSharedSubject,
                         onAddSharedTopic = onAddSharedTopic, onAddSharedSubtopic = onAddSharedSubtopic
                     )
                     2 -> AdminStudentsTab(students = students, onLoadStudentResults = onLoadStudentResults)
                     3 -> AdminRequestsTab(
-                        currentWhatsAppDigits = currentWhatsAppDigits, requests = requests,
-                        onSaveWhatsAppDigits = onSaveWhatsAppDigits, onUpdateStatus = onUpdateWhatsAppRequestStatus
+                        currentWhatsAppDigits = currentWhatsAppDigits,
+                        requests = requests,
+                        allowStudentUploads = allowStudentUploads,
+                        pendingSubmissions = pendingSubmissions,
+                        onToggleAllowStudentUploads = onToggleAllowStudentUploads,
+                        onApproveSubmission = onApproveSubmission,
+                        onRejectSubmission = onRejectSubmission,
+                        onSaveWhatsAppDigits = onSaveWhatsAppDigits,
+                        onUpdateStatus = onUpdateWhatsAppRequestStatus
                     )
                 }
             }
@@ -176,7 +221,10 @@ private fun AdminUploadCatalogTab(
     publishedCatalogLink: String?,
     onPublishCatalogToDrive: () -> Unit,
     onUploadSharedContent: (String, String, String, String, String, NoteType, Boolean, Uri?, Boolean, StudyNote?) -> Unit,
+    onBatchUploadSharedContent: (String, String, String, String, NoteType, Boolean, List<Uri>, Boolean) -> Unit,
+    onEditSharedContent: (StudyNote, String, String, Boolean, Boolean) -> Unit,
     onTogglePublished: (StudyNote) -> Unit, onDeleteSharedContent: (StudyNote) -> Unit, onPreviewSharedNote: (StudyNote) -> Unit,
+    onAddSharedSubject: (String, String?, String, String) -> Unit,
     onAddSharedTopic: (String, String, String?) -> Unit, onAddSharedSubtopic: (String, String, String) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
@@ -194,8 +242,10 @@ private fun AdminUploadCatalogTab(
     var published by remember { mutableStateOf(true) }
     var pickedUri by remember { mutableStateOf<Uri?>(null) }
     var replacingNote by remember { mutableStateOf<StudyNote?>(null) }
+    var editingNote by remember { mutableStateOf<StudyNote?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var pendingDeleteNote by remember { mutableStateOf<StudyNote?>(null) }
+    var showNewSubjectDialog by remember { mutableStateOf(false) }
     var showNewTopicDialog by remember { mutableStateOf(false) }
     var showNewSubtopicDialog by remember { mutableStateOf(false) }
 
@@ -210,6 +260,11 @@ private fun AdminUploadCatalogTab(
             }
         }
     }
+    val batchDocPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty() && selectedSubId.isNotBlank()) {
+            onBatchUploadSharedContent(selectedSubjectId, selectedTopicId, selectedSubId, folderName, noteType, isMockTest, uris, published)
+        }
+    }
     val imgPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) pickedUri = uri
     }
@@ -219,7 +274,7 @@ private fun AdminUploadCatalogTab(
             Tactile3DCard(accentColor = theme.primary, modifier = Modifier.fillMaxWidth()) {
                 Text("Publish Shared Catalog to Google Drive", style = MaterialTheme.typography.titleMedium, color = theme.primary)
                 Text(
-                    "अपने Google Drive (LEARN TALENT/Shared Catalog/) में shared_catalog.json पब्लिश करें ताकि छात्र इसे Settings से इम्पोर्ट कर सकें।",
+                    "LEARN TALENT/ADMIN/ (PUBLISHED TESTS • PDF NOTES • STUDY MATERIAL • SUBJECTS) में shared_catalog.json पब्लिश करें।",
                     style = MaterialTheme.typography.bodySmall,
                     color = theme.onSurfaceVariant
                 )
@@ -256,7 +311,10 @@ private fun AdminUploadCatalogTab(
             Tactile3DCard(accentColor = theme.tertiary, modifier = Modifier.fillMaxWidth()) {
                 Text("Upload Shared Material (1 Upload → All Students)", style = MaterialTheme.typography.titleMedium, color = theme.tertiary)
                 Spacer(Modifier.height(6.dp))
-                Text("Subject:", style = MaterialTheme.typography.labelMedium, color = theme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("Subject (${subjects.size}):", style = MaterialTheme.typography.labelMedium, color = theme.onSurfaceVariant)
+                    TextButton(onClick = { showNewSubjectDialog = true }) { Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp)); Text("New Subject") }
+                }
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(subjects, key = { it.id }) { s ->
                         FilterChip(selected = selectedSubjectId == s.id, onClick = { selectedSubjectId = s.id }, label = { Text(s.nameEn) })
@@ -323,6 +381,23 @@ private fun AdminUploadCatalogTab(
                         Spacer(Modifier.width(4.dp)); Text("Upload")
                     }
                 }
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = {
+                        val mimes = when (noteType) {
+                            NoteType.PDF -> arrayOf("application/pdf", "*/*")
+                            NoteType.IMAGE -> arrayOf("image/*", "*/*")
+                            else -> arrayOf("text/html", "*/*")
+                        }
+                        batchDocPicker.launch(mimes)
+                    },
+                    enabled = selectedSubId.isNotBlank() && uploadProgress == null,
+                    modifier = Modifier.fillMaxWidth().testTag("admin_batch_upload_btn")
+                ) {
+                    Icon(Icons.Rounded.LibraryAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Batch Upload Multiple ${noteType.name} Files")
+                }
                 if (uploadProgress != null) {
                     Spacer(Modifier.height(8.dp))
                     LinearProgressIndicator(progress = { uploadProgress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth(), color = theme.success)
@@ -351,6 +426,7 @@ private fun AdminUploadCatalogTab(
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                     IconButton(onClick = { onPreviewSharedNote(item) }) { Icon(Icons.Rounded.Visibility, contentDescription = "Preview") }
+                    IconButton(onClick = { editingNote = item }) { Icon(Icons.Rounded.Edit, contentDescription = "Edit Test or Material") }
                     IconButton(onClick = { onTogglePublished(item) }) { Icon(Icons.Rounded.PublishedWithChanges, contentDescription = "Toggle Publish") }
                     IconButton(onClick = {
                         replacingNote = item
@@ -362,6 +438,41 @@ private fun AdminUploadCatalogTab(
         }
     }
 
+    val editTarget = editingNote
+    if (editTarget != null) {
+        var eTitle by remember(editTarget) { mutableStateOf(editTarget.title) }
+        var eFolder by remember(editTarget) { mutableStateOf(editTarget.folderName) }
+        var eMock by remember(editTarget) { mutableStateOf(editTarget.isMockTest) }
+        var ePublished by remember(editTarget) { mutableStateOf(editTarget.published) }
+        AlertDialog(
+            onDismissRequest = { editingNote = null }, containerColor = theme.surfaceElevated,
+            title = { Text("Edit Shared Content", color = theme.onSurface) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = eTitle, onValueChange = { eTitle = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = eFolder, onValueChange = { eFolder = it }, label = { Text("Folder Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Published", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = ePublished, onCheckedChange = { ePublished = it })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("Mock Test", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = eMock, onCheckedChange = { eMock = it })
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (eTitle.isNotBlank()) {
+                        onEditSharedContent(editTarget, eTitle, eFolder, eMock, ePublished)
+                        editingNote = null
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { editingNote = null }) { Text("Cancel") } }
+        )
+    }
+
     val del = pendingDeleteNote
     if (del != null) {
         AlertDialog(
@@ -370,6 +481,30 @@ private fun AdminUploadCatalogTab(
             text = { Text("'${del.title}' सभी छात्रों के लिए हट जाएगा। जारी रखें?", color = theme.onSurfaceVariant) },
             confirmButton = { Button(onClick = { onDeleteSharedContent(del); pendingDeleteNote = null }, colors = ButtonDefaults.buttonColors(containerColor = theme.error, contentColor = theme.onPrimary)) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { pendingDeleteNote = null }) { Text("Cancel") } }
+        )
+    }
+
+    if (showNewSubjectDialog) {
+        var sEn by remember { mutableStateOf("") }
+        var sHi by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showNewSubjectDialog = false }, containerColor = theme.surfaceElevated,
+            title = { Text("New Shared Subject", color = theme.onSurface) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = sEn, onValueChange = { sEn = it }, label = { Text("Subject Name (English)") }, singleLine = true)
+                    OutlinedTextField(value = sHi, onValueChange = { sHi = it }, label = { Text("Hindi Name (Optional)") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (sEn.isNotBlank()) {
+                        onAddSharedSubject(sEn.trim(), sHi.trim().ifBlank { null }, "book", "#2456A4")
+                        showNewSubjectDialog = false
+                    }
+                }) { Text("Create") }
+            },
+            dismissButton = { TextButton(onClick = { showNewSubjectDialog = false }) { Text("Cancel") } }
         )
     }
 

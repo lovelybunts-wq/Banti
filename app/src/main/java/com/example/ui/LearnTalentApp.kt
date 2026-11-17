@@ -14,12 +14,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.EventNote
-import androidx.compose.material.icons.automirrored.rounded.EventNote
+import androidx.compose.material.icons.outlined.Assessment
 import androidx.compose.material.icons.outlined.AutoStories
-import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Quiz
+import androidx.compose.material.icons.rounded.Assessment
 import androidx.compose.material.icons.rounded.AutoStories
-import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Quiz
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -41,8 +45,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -81,12 +87,15 @@ import com.example.ui.navigation.ImageViewerRoute
 import com.example.ui.navigation.McqPracticeRoute
 import com.example.ui.navigation.PdfViewerRoute
 import com.example.ui.navigation.PersonalNotesRoute
+import com.example.ui.navigation.ResultsAnalyticsRoute
 import com.example.ui.navigation.RevisionPlannerRoute
 import com.example.ui.navigation.SettingsRoute
+import com.example.ui.navigation.StudyHubRoute
 import com.example.ui.navigation.SubjectsHomeRoute
 import com.example.ui.navigation.SubtopicDetailRoute
 import com.example.ui.navigation.SubtopicsRoute
 import com.example.ui.navigation.TestResultRoute
+import com.example.ui.navigation.TestsHubRoute
 import com.example.ui.navigation.TopicsRoute
 import com.example.ui.screens.AdminPanelScreen
 import com.example.ui.screens.BookmarksScreen
@@ -98,11 +107,14 @@ import com.example.ui.screens.ImageViewerScreen
 import com.example.ui.screens.McqPracticeScreen
 import com.example.ui.screens.PdfViewerScreen
 import com.example.ui.screens.PersonalNotesScreen
+import com.example.ui.screens.ResultsAnalyticsScreen
 import com.example.ui.screens.RevisionPlannerScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.StudyHubScreen
 import com.example.ui.screens.SubtopicDetailScreen
 import com.example.ui.screens.SubtopicsScreen
 import com.example.ui.screens.TestResultScreen
+import com.example.ui.screens.TestsHubScreen
 import com.example.ui.screens.TopicsScreen
 import com.example.ui.security.BiometricLockScreen
 import com.example.ui.theme.LearnTalentTheme
@@ -113,6 +125,14 @@ private data class WhatsAppRequestPrefill(
     val subject: String = "",
     val topic: String = "",
     val subtopic: String = "",
+)
+
+private data class TopLevelNavItem(
+    val labelRes: Int,
+    val selectedIcon: ImageVector,
+    val unselectedIcon: ImageVector,
+    val route: Any,
+    val matches: (androidx.navigation.NavDestination?) -> Boolean,
 )
 
 @Composable
@@ -217,20 +237,57 @@ private fun AuthenticatedAppContent(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { res ->
         if (activity != null) {
-            viewModel.onConsentIntentResult(activity, res.data)
+            viewModel.onConsentIntentResult(activity, res.resultCode, res.data)
         }
     }
 
-    // Account Sign-In / Switch IntentSender launcher (used when upgrading from Offline -> Gmail or Switching Gmail)
+    // Fallback GoogleSignIn ActivityResult launcher
+    val fallbackSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (activity == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            when (
+                val out = GoogleAuthHelper.completeFallbackSignInFromIntent(
+                    activity = activity,
+                    resultCode = res.resultCode,
+                    data = res.data,
+                    driveManager = driveManager,
+                    prefs = prefs
+                )
+            ) {
+                is GoogleSignInResult.Success -> {
+                    onSignedInUpdated(out.session, out.accessToken)
+                    viewModel.showToast("Signed in as ${out.session.email}")
+                }
+                is GoogleSignInResult.Error -> viewModel.showToast(out.message)
+                is GoogleSignInResult.NeedsConsentUi,
+                is GoogleSignInResult.NeedsFallbackSignInUi -> Unit
+            }
+        }
+    }
+
+    // Account Sign-In / Switch IntentSender launcher
     val accountSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { res ->
         if (activity == null) return@rememberLauncherForActivityResult
         scope.launch {
-            when (val out = GoogleAuthHelper.completeSignInFromIntent(activity, res.data, driveManager, prefs)) {
+            when (
+                val out = GoogleAuthHelper.completeSignInFromIntent(
+                    activity = activity,
+                    resultCode = res.resultCode,
+                    data = res.data,
+                    driveManager = driveManager,
+                    prefs = prefs
+                )
+            ) {
                 is GoogleSignInResult.Success -> {
                     onSignedInUpdated(out.session, out.accessToken)
                     viewModel.showToast("Signed in as ${out.session.email} — syncing Drive...")
+                }
+                is GoogleSignInResult.NeedsFallbackSignInUi -> {
+                    fallbackSignInLauncher.launch(out.signInIntent)
                 }
                 is GoogleSignInResult.Error -> viewModel.showToast(out.message)
                 is GoogleSignInResult.NeedsConsentUi -> Unit
@@ -245,6 +302,7 @@ private fun AuthenticatedAppContent(
         }
         scope.launch {
             if (switchAccountFirst) {
+                viewModel.clearSessionCaches()
                 GoogleAuthHelper.signOut(context.applicationContext, prefs, returnToAuthScreen = false)
             }
             when (val res = GoogleAuthHelper.startGoogleSignIn(activity, driveManager, prefs)) {
@@ -254,6 +312,9 @@ private fun AuthenticatedAppContent(
                 }
                 is GoogleSignInResult.NeedsConsentUi -> {
                     accountSignInLauncher.launch(IntentSenderRequest.Builder(res.intentSender).build())
+                }
+                is GoogleSignInResult.NeedsFallbackSignInUi -> {
+                    fallbackSignInLauncher.launch(res.signInIntent)
                 }
                 is GoogleSignInResult.Error -> {
                     viewModel.showToast(res.message)
@@ -292,6 +353,9 @@ private fun AuthenticatedAppContent(
     val lastReturnedScore by viewModel.lastReturnedScore.collectAsStateWithLifecycle()
     val driveSyncState by viewModel.driveSyncState.collectAsStateWithLifecycle()
     val publishedCatalogLink by viewModel.publishedCatalogLink.collectAsStateWithLifecycle()
+    val isNetworkOnline by viewModel.isNetworkOnline.collectAsStateWithLifecycle()
+    val pendingSyncCount by viewModel.pendingSyncCount.collectAsStateWithLifecycle()
+    val allowStudentPersonalUploads by viewModel.allowStudentPersonalUploads.collectAsStateWithLifecycle()
 
     val subjects = (subjectsState as? UiState.Success)?.data ?: emptyList()
     val topics = (topicsState as? UiState.Success)?.data ?: emptyList()
@@ -301,6 +365,8 @@ private fun AuthenticatedAppContent(
     val mcqs = (mcqsState as? UiState.Success)?.data ?: emptyList()
     val fullLengthExams = (fullLengthExamsState as? UiState.Success)?.data ?: FullLengthExamDefaults.builtInExams
     val testResults = (testResultsState as? UiState.Success)?.data ?: emptyList()
+    val studyLogs = (studyLogsState as? UiState.Success)?.data ?: emptyList()
+    val diaryEntries = (revisionDiaryState as? UiState.Success)?.data ?: emptyList()
     val personalNotes = (personalNotesState as? UiState.Success)?.data ?: emptyList()
     val bookmarks = (bookmarksState as? UiState.Success)?.data ?: emptyList()
     val profile = (profileState as? UiState.Success)?.data
@@ -309,10 +375,35 @@ private fun AuthenticatedAppContent(
         it.isNotBlank() && it != "Learner" && it != "Offline Learner"
     } ?: sessionUser.displayName
 
+    val topLevelNavItems = remember {
+        listOf(
+            TopLevelNavItem(R.string.nav_home, Icons.Rounded.Home, Icons.Outlined.Home, SubjectsHomeRoute) {
+                it?.hasRoute<SubjectsHomeRoute>() == true
+            },
+            TopLevelNavItem(R.string.nav_tests, Icons.Rounded.Quiz, Icons.Outlined.Quiz, TestsHubRoute) {
+                it?.hasRoute<TestsHubRoute>() == true
+            },
+            TopLevelNavItem(R.string.nav_study, Icons.Rounded.AutoStories, Icons.Outlined.AutoStories, StudyHubRoute) {
+                it?.hasRoute<StudyHubRoute>() == true || it?.hasRoute<RevisionPlannerRoute>() == true
+            },
+            TopLevelNavItem(R.string.nav_results, Icons.Rounded.Assessment, Icons.Outlined.Assessment, ResultsAnalyticsRoute) {
+                it?.hasRoute<ResultsAnalyticsRoute>() == true
+            },
+            TopLevelNavItem(R.string.nav_profile, Icons.Rounded.Person, Icons.Outlined.Person, SettingsRoute) {
+                it?.hasRoute<SettingsRoute>() == true
+            },
+        )
+    }
+
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDest = navBackStackEntry?.destination
     val isTopLevelRoute = currentDest?.let { dest ->
-        dest.hasRoute<SubjectsHomeRoute>() || dest.hasRoute<RevisionPlannerRoute>() || dest.hasRoute<SettingsRoute>()
+        dest.hasRoute<SubjectsHomeRoute>() ||
+            dest.hasRoute<TestsHubRoute>() ||
+            dest.hasRoute<StudyHubRoute>() ||
+            dest.hasRoute<ResultsAnalyticsRoute>() ||
+            dest.hasRoute<RevisionPlannerRoute>() ||
+            dest.hasRoute<SettingsRoute>()
     } ?: true
 
     fun navigateTopLevel(route: Any) {
@@ -323,13 +414,13 @@ private fun AuthenticatedAppContent(
         }
     }
 
-    fun openNoteDestination(note: StudyNote, subjectName: String = "Study") {
+    fun openNoteDestination(note: StudyNote, subjectName: String = "Study", testMode: Boolean = true) {
         viewModel.markNoteOpenedToday(note, subjectName)
         when (note.resolvedType()) {
             NoteType.PDF -> navController.navigate(PdfViewerRoute(noteId = note.id))
             NoteType.IMAGE -> navController.navigate(ImageViewerRoute(note.id))
             NoteType.HTML -> navController.navigate(
-                HtmlTestRoute(note.id, note.subjectId, note.topicId, note.subtopicId, isTestMode = true)
+                HtmlTestRoute(note.id, note.subjectId, note.topicId, note.subtopicId, isTestMode = testMode)
             )
             NoteType.FOLDER -> Unit
         }
@@ -341,27 +432,28 @@ private fun AuthenticatedAppContent(
         bottomBar = {
             if (isCompactWidth && isTopLevelRoute) {
                 NavigationBar(containerColor = theme.surface, windowInsets = WindowInsets.navigationBars) {
-                    NavigationBarItem(
-                        selected = currentDest?.hasRoute<SubjectsHomeRoute>() == true,
-                        onClick = { navigateTopLevel(SubjectsHomeRoute) },
-                        icon = { Icon(if (currentDest?.hasRoute<SubjectsHomeRoute>() == true) Icons.Rounded.AutoStories else Icons.Outlined.AutoStories, contentDescription = stringResource(R.string.nav_subjects)) },
-                        label = { Text(stringResource(R.string.nav_subjects)) },
-                        colors = NavigationBarItemDefaults.colors(selectedIconColor = theme.primary, selectedTextColor = theme.primary, indicatorColor = theme.primaryContainer, unselectedIconColor = theme.onSurfaceVariant, unselectedTextColor = theme.onSurfaceVariant)
-                    )
-                    NavigationBarItem(
-                        selected = currentDest?.hasRoute<RevisionPlannerRoute>() == true,
-                        onClick = { navigateTopLevel(RevisionPlannerRoute) },
-                        icon = { Icon(if (currentDest?.hasRoute<RevisionPlannerRoute>() == true) Icons.AutoMirrored.Rounded.EventNote else Icons.AutoMirrored.Outlined.EventNote, contentDescription = stringResource(R.string.nav_revision)) },
-                        label = { Text(stringResource(R.string.nav_revision)) },
-                        colors = NavigationBarItemDefaults.colors(selectedIconColor = theme.primary, selectedTextColor = theme.primary, indicatorColor = theme.primaryContainer, unselectedIconColor = theme.onSurfaceVariant, unselectedTextColor = theme.onSurfaceVariant)
-                    )
-                    NavigationBarItem(
-                        selected = currentDest?.hasRoute<SettingsRoute>() == true,
-                        onClick = { navigateTopLevel(SettingsRoute) },
-                        icon = { Icon(if (currentDest?.hasRoute<SettingsRoute>() == true) Icons.Rounded.Tune else Icons.Outlined.Tune, contentDescription = stringResource(R.string.nav_settings)) },
-                        label = { Text(stringResource(R.string.nav_settings)) },
-                        colors = NavigationBarItemDefaults.colors(selectedIconColor = theme.primary, selectedTextColor = theme.primary, indicatorColor = theme.primaryContainer, unselectedIconColor = theme.onSurfaceVariant, unselectedTextColor = theme.onSurfaceVariant)
-                    )
+                    topLevelNavItems.forEach { item ->
+                        val selected = item.matches(currentDest)
+                        val labelText = stringResource(item.labelRes)
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick = { navigateTopLevel(item.route) },
+                            icon = {
+                                Icon(
+                                    imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
+                                    contentDescription = labelText
+                                )
+                            },
+                            label = { Text(labelText, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = theme.primary,
+                                selectedTextColor = theme.primary,
+                                indicatorColor = theme.primaryContainer,
+                                unselectedIconColor = theme.onSurfaceVariant,
+                                unselectedTextColor = theme.onSurfaceVariant
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -369,27 +461,26 @@ private fun AuthenticatedAppContent(
         Row(modifier = Modifier.fillMaxSize().background(theme.background).padding(innerPadding)) {
             if (!isCompactWidth && isTopLevelRoute) {
                 NavigationRail(containerColor = theme.surface, modifier = Modifier.fillMaxHeight()) {
-                    NavigationRailItem(
-                        selected = currentDest?.hasRoute<SubjectsHomeRoute>() == true,
-                        onClick = { navigateTopLevel(SubjectsHomeRoute) },
-                        icon = { Icon(Icons.Rounded.AutoStories, contentDescription = stringResource(R.string.nav_subjects)) },
-                        label = { Text(stringResource(R.string.nav_subjects)) },
-                        colors = NavigationRailItemDefaults.colors(selectedIconColor = theme.primary, selectedTextColor = theme.primary, indicatorColor = theme.primaryContainer)
-                    )
-                    NavigationRailItem(
-                        selected = currentDest?.hasRoute<RevisionPlannerRoute>() == true,
-                        onClick = { navigateTopLevel(RevisionPlannerRoute) },
-                        icon = { Icon(Icons.AutoMirrored.Rounded.EventNote, contentDescription = stringResource(R.string.nav_revision)) },
-                        label = { Text(stringResource(R.string.nav_revision)) },
-                        colors = NavigationRailItemDefaults.colors(selectedIconColor = theme.primary, selectedTextColor = theme.primary, indicatorColor = theme.primaryContainer)
-                    )
-                    NavigationRailItem(
-                        selected = currentDest?.hasRoute<SettingsRoute>() == true,
-                        onClick = { navigateTopLevel(SettingsRoute) },
-                        icon = { Icon(Icons.Rounded.Tune, contentDescription = stringResource(R.string.nav_settings)) },
-                        label = { Text(stringResource(R.string.nav_settings)) },
-                        colors = NavigationRailItemDefaults.colors(selectedIconColor = theme.primary, selectedTextColor = theme.primary, indicatorColor = theme.primaryContainer)
-                    )
+                    topLevelNavItems.forEach { item ->
+                        val selected = item.matches(currentDest)
+                        val labelText = stringResource(item.labelRes)
+                        NavigationRailItem(
+                            selected = selected,
+                            onClick = { navigateTopLevel(item.route) },
+                            icon = {
+                                Icon(
+                                    imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
+                                    contentDescription = labelText
+                                )
+                            },
+                            label = { Text(labelText) },
+                            colors = NavigationRailItemDefaults.colors(
+                                selectedIconColor = theme.primary,
+                                selectedTextColor = theme.primary,
+                                indicatorColor = theme.primaryContainer
+                            )
+                        )
+                    }
                 }
             }
 
@@ -401,6 +492,7 @@ private fun AuthenticatedAppContent(
                             topicsState = topicsState,
                             notesState = notesState,
                             fullLengthExamsState = fullLengthExamsState,
+                            testResults = testResults,
                             studyLogsState = studyLogsState,
                             revisionDiaryState = revisionDiaryState,
                             personalNotesState = personalNotesState,
@@ -411,6 +503,8 @@ private fun AuthenticatedAppContent(
                             photoUrl = sessionUser.photoUrl,
                             isAdminUser = isAdminUser,
                             isOfflineAccount = sessionUser.isOffline,
+                            isNetworkOnline = isNetworkOnline,
+                            pendingSyncCount = pendingSyncCount,
                             driveSyncState = driveSyncState,
                             onSignInOrSyncNow = {
                                 if (sessionUser.isOffline) launchInteractiveGoogleSignIn(switchAccountFirst = false)
@@ -419,6 +513,7 @@ private fun AuthenticatedAppContent(
                             onToggleLightDark = { viewModel.toggleLightDarkTheme() },
                             onSubjectClick = { navController.navigate(TopicsRoute(it.id)) },
                             onOpenFullLengthTests = { navController.navigate(FullLengthExamsRoute) },
+                            onStartMockTest = { note -> openNoteDestination(note, "Mock Test", testMode = true) },
                             onOpenRecentActivity = { act ->
                                 val note = notes.firstOrNull { it.id == act.refId }
                                 if (note != null) openNoteDestination(note, act.subtitle)
@@ -428,7 +523,10 @@ private fun AuthenticatedAppContent(
                                     navController.navigate(SubtopicDetailRoute(act.subjectId, act.topicId, act.subtopicId))
                                 }
                             },
-                            onOpenRevisionTab = { navigateTopLevel(RevisionPlannerRoute) },
+                            onOpenTestsTab = { navigateTopLevel(TestsHubRoute) },
+                            onOpenStudyTab = { navigateTopLevel(StudyHubRoute) },
+                            onOpenResultsTab = { navigateTopLevel(ResultsAnalyticsRoute) },
+                            onOpenRevisionTab = { navController.navigate(RevisionPlannerRoute) },
                             onOpenSettingsTab = { navigateTopLevel(SettingsRoute) },
                             onOpenPersonalNotes = { navController.navigate(PersonalNotesRoute()) },
                             onOpenBookmarks = { navController.navigate(BookmarksRoute) },
@@ -438,6 +536,51 @@ private fun AuthenticatedAppContent(
                                 viewModel.toggleBookmark(BookmarkType.SAVED_TOPIC, subj.nameEn, subj.nameHi ?: "Subject", subj.id, subjectId = subj.id)
                             },
                             onAddSubject = { en, hi, icon, hex, order -> viewModel.addSubject(en, hi, icon, hex, order) }
+                        )
+                    }
+
+                    composable<TestsHubRoute> {
+                        TestsHubScreen(
+                            subjects = subjects,
+                            notes = notes,
+                            mcqs = mcqs,
+                            fullLengthExams = fullLengthExams,
+                            testResults = testResults,
+                            onStartHtmlTest = { note, isTestMode -> openNoteDestination(note, "Mock Test", testMode = isTestMode) },
+                            onOpenFullLengthExam = { exam -> navController.navigate(FullLengthExamTestsRoute(exam.id)) },
+                            onOpenAllFullLengthExams = { navController.navigate(FullLengthExamsRoute) },
+                            onStartPracticeMcqs = { sId, tId, stId -> navController.navigate(McqPracticeRoute(sId, tId, stId)) },
+                            onOpenSubjectTopics = { subj -> navController.navigate(TopicsRoute(subj.id)) }
+                        )
+                    }
+
+                    composable<StudyHubRoute> {
+                        StudyHubScreen(
+                            subjects = subjects,
+                            topics = topics,
+                            notes = notes,
+                            bookmarks = bookmarks,
+                            personalNotes = personalNotes,
+                            diaryEntries = diaryEntries,
+                            onSubjectClick = { navController.navigate(TopicsRoute(it.id)) },
+                            onBookmarkSubject = { subj ->
+                                viewModel.toggleBookmark(BookmarkType.SAVED_TOPIC, subj.nameEn, subj.nameHi ?: "Subject", subj.id, subjectId = subj.id)
+                            },
+                            onOpenNote = { note, subjName -> openNoteDestination(note, subjName) },
+                            onOpenRevisionPlanner = { navController.navigate(RevisionPlannerRoute) },
+                            onOpenPersonalNotes = { navController.navigate(PersonalNotesRoute()) },
+                            onOpenBookmarks = { navController.navigate(BookmarksRoute) }
+                        )
+                    }
+
+                    composable<ResultsAnalyticsRoute> {
+                        ResultsAnalyticsScreen(
+                            testResults = testResults,
+                            subjects = subjects,
+                            studyLogs = studyLogs,
+                            onOpenTestResult = { resultId -> navController.navigate(TestResultRoute(resultId)) },
+                            onExportPdf = { r, share -> viewModel.exportTestResultPdf(r, share) },
+                            onGoToTests = { navigateTopLevel(TestsHubRoute) }
                         )
                     }
 
@@ -528,6 +671,7 @@ private fun AuthenticatedAppContent(
                             testResults = testResults.filter { it.subtopicId == route.subtopicId },
                             bookmarks = bookmarks, sharedDownloadsMap = sharedDownloadsMap,
                             sharedDownloadProgress = sharedDownloadProgress, isAdminUser = isAdminUser,
+                            allowStudentPersonalUploads = allowStudentPersonalUploads,
                             lastReturnedScore = lastReturnedScore,
                             onDismissScoreBanner = { viewModel.clearLastReturnedScore() },
                             onBack = { navController.popBackStack() },
@@ -546,6 +690,7 @@ private fun AuthenticatedAppContent(
                             onOpenNote = { note -> openNoteDestination(note, subjectName) },
                             onOpenHtmlTest = { note -> openNoteDestination(note, subjectName) },
                             onDownloadShared = { viewModel.downloadSharedNote(it) },
+                            onSubmitForAdminApproval = { viewModel.submitPersonalNoteForAdminApproval(it) },
                             onToggleBookmarkNote = { n ->
                                 viewModel.toggleBookmark(BookmarkType.FAVORITE_NOTE, n.title, "$subjectName • ${n.noteType}", n.id, route.subjectId, route.topicId, route.subtopicId)
                             },
@@ -716,6 +861,7 @@ private fun AuthenticatedAppContent(
                         val adminSubtopics by viewModel.adminSharedSubtopics.collectAsStateWithLifecycle()
                         val studentSummaries by viewModel.studentSummaries.collectAsStateWithLifecycle()
                         val adminRequests by viewModel.adminWhatsAppRequests.collectAsStateWithLifecycle()
+                        val pendingSubmissions by viewModel.adminPendingSubmissions.collectAsStateWithLifecycle()
                         val uploadProgress by viewModel.adminUploadProgress.collectAsStateWithLifecycle()
                         AdminPanelScreen(
                             isAdminUser = isAdminUser, subjects = subjects,
@@ -724,16 +870,30 @@ private fun AuthenticatedAppContent(
                             sharedContent = adminContent, students = studentSummaries, requests = adminRequests,
                             uploadProgress = uploadProgress, currentWhatsAppDigits = localSettings.adminWhatsAppNumber,
                             publishedCatalogLink = publishedCatalogLink,
+                            allowStudentUploads = allowStudentPersonalUploads,
+                            pendingSubmissions = pendingSubmissions,
                             onPublishCatalogToDrive = { viewModel.adminPublishCatalogToDrive(activity) },
                             onUploadSharedContent = { sId, tId, stId, fold, title, type, isTest, uri, pub, existing ->
                                 viewModel.adminUploadSharedContent(sId, tId, stId, fold, title, type, isTest, uri, pub, existing)
                             },
+                            onBatchUploadSharedContent = { sId, tId, stId, fold, type, isTest, uris, pub ->
+                                viewModel.adminBatchUploadSharedContent(sId, tId, stId, fold, type, isTest, uris, pub)
+                            },
+                            onEditSharedContent = { note, newTitle, newFold, isMock, pub ->
+                                viewModel.adminEditSharedContent(note, newTitle, newFold, isMock, pub)
+                            },
                             onTogglePublished = { viewModel.adminToggleSharedContentPublished(it) },
                             onDeleteSharedContent = { viewModel.adminDeleteSharedContent(it) },
                             onPreviewSharedNote = { openNoteDestination(it) },
+                            onAddSharedSubject = { en, hi, icon, hex ->
+                                viewModel.adminCreateSharedSubject(en, hi, icon, hex, subjects.size.toLong())
+                            },
                             onAddSharedTopic = { sId, name, desc -> viewModel.adminUpsertSharedTopic(sId, name, desc) },
                             onAddSharedSubtopic = { sId, tId, name -> viewModel.adminUpsertSharedSubtopic(sId, tId, name) },
                             onLoadStudentResults = { uid, cb -> viewModel.adminLoadStudentResults(uid, cb) },
+                            onToggleAllowStudentUploads = { viewModel.adminSetAllowStudentUploads(it) },
+                            onApproveSubmission = { viewModel.adminApproveSubmission(it) },
+                            onRejectSubmission = { viewModel.adminRejectSubmission(it) },
                             onSaveWhatsAppDigits = { viewModel.saveAdminWhatsAppNumber(it) },
                             onUpdateWhatsAppRequestStatus = { rId, status -> viewModel.adminUpdateWhatsAppRequestStatus(rId, status) },
                             onBack = { navController.popBackStack() }
@@ -760,6 +920,9 @@ private fun AuthenticatedAppContent(
                     }
 
                     composable<SettingsRoute> {
+                        val avgPct = remember(testResults) {
+                            if (testResults.isEmpty()) 0.0 else testResults.map { it.percentage }.average()
+                        }
                         SettingsScreen(
                             localSettings = localSettings,
                             signedInEmail = sessionUser.email.takeIf { it.isNotBlank() },
@@ -768,6 +931,10 @@ private fun AuthenticatedAppContent(
                             uidLabel = sessionUser.uid,
                             isOfflineAccount = sessionUser.isOffline,
                             isAdminUser = isAdminUser,
+                            isNetworkOnline = isNetworkOnline,
+                            pendingSyncCount = pendingSyncCount,
+                            studentAttemptsCount = testResults.size,
+                            studentAveragePct = avgPct,
                             driveSyncState = driveSyncState,
                             onSignInWithGoogle = { launchInteractiveGoogleSignIn(switchAccountFirst = false) },
                             onSwitchGoogleAccount = { launchInteractiveGoogleSignIn(switchAccountFirst = true) },
@@ -781,7 +948,10 @@ private fun AuthenticatedAppContent(
                             onLockNow = { isVaultUnlocked = false },
                             onOpenAdminPanel = { navController.navigate(AdminPanelRoute) },
                             onOpenSupport = { whatsAppPrefill = WhatsAppRequestPrefill() },
-                            onSignedOut = onSignedOutResetSession
+                            onSignedOut = {
+                                viewModel.clearSessionCaches()
+                                onSignedOutResetSession()
+                            }
                         )
                     }
                 }

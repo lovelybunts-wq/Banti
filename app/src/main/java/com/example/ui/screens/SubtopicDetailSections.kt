@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -79,6 +80,7 @@ import com.example.ui.theme.LocalStudyTheme
 internal fun SubtopicNotesSection(
     accent: Color,
     isAdminUser: Boolean,
+    allowStudentPersonalUploads: Boolean = true,
     folderNames: List<String>,
     selectedFolder: String,
     onSelectFolder: (String) -> Unit,
@@ -93,11 +95,13 @@ internal fun SubtopicNotesSection(
     onRequestMaterialWhatsApp: () -> Unit,
     onOpenNote: (StudyNote) -> Unit,
     onDownloadShared: (StudyNote) -> Unit,
+    onSubmitForAdminApproval: (StudyNote) -> Unit = {},
     onToggleBookmarkNote: (StudyNote) -> Unit,
     onEditNote: (StudyNote) -> Unit,
     onConfirmDeleteNote: (StudyNote) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
+    val canUploadPersonal = isAdminUser || allowStudentPersonalUploads
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 28.dp),
@@ -106,19 +110,19 @@ internal fun SubtopicNotesSection(
         item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
-                    OutlinedButton(onClick = onAddPdfClick, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("add_pdf_note_btn")) {
+                    OutlinedButton(onClick = onAddPdfClick, enabled = canUploadPersonal, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("add_pdf_note_btn")) {
                         Icon(Icons.Rounded.PictureAsPdf, contentDescription = null, tint = theme.secondary)
                         Spacer(Modifier.width(6.dp)); Text("PDF", color = theme.onSurface)
                     }
                 }
                 item {
-                    OutlinedButton(onClick = onAddHtmlClick, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("add_html_note_btn")) {
+                    OutlinedButton(onClick = onAddHtmlClick, enabled = canUploadPersonal, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("add_html_note_btn")) {
                         Icon(Icons.Rounded.Code, contentDescription = null, tint = accent)
                         Spacer(Modifier.width(6.dp)); Text("HTML", color = theme.onSurface)
                     }
                 }
                 item {
-                    OutlinedButton(onClick = onAddImageClick, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("add_image_note_btn")) {
+                    OutlinedButton(onClick = onAddImageClick, enabled = canUploadPersonal, shape = RoundedCornerShape(12.dp), modifier = Modifier.testTag("add_image_note_btn")) {
                         Icon(Icons.Rounded.Image, contentDescription = null, tint = theme.tertiary)
                         Spacer(Modifier.width(6.dp)); Text("Image", color = theme.onSurface)
                     }
@@ -135,6 +139,14 @@ internal fun SubtopicNotesSection(
                         Spacer(Modifier.width(6.dp)); Text("मांगें (WhatsApp)", color = theme.success)
                     }
                 }
+            }
+            if (!canUploadPersonal) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Admin द्वारा छात्र फ़ाइल अपलोड अभी बंद है। आप Admin सामग्री डाउनलोड व पढ़ सकते हैं।",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = theme.onSurfaceVariant
+                )
             }
         }
 
@@ -187,7 +199,11 @@ internal fun SubtopicNotesSection(
                             Spacer(Modifier.height(4.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Tactile3DBadge(text = note.noteType, color = accent)
-                                if (note.isShared) Tactile3DBadge(text = "Shared v${note.version}", color = theme.secondary)
+                                if (note.isShared) {
+                                    Tactile3DBadge(text = "Shared v${note.version}", color = theme.secondary)
+                                } else {
+                                    Tactile3DBadge(text = "Private", color = theme.tertiary)
+                                }
                                 if (note.folderName.isNotBlank()) Tactile3DBadge(text = note.folderName, color = theme.primary)
                                 if (note.fileSizeBytes > 0L) Tactile3DBadge(text = LocalFileStorage.formatBytes(note.fileSizeBytes), color = theme.tertiary)
                             }
@@ -209,6 +225,14 @@ internal fun SubtopicNotesSection(
                                     imageVector = if (isDownloaded && !hasUpdate) Icons.Rounded.DownloadDone else Icons.Rounded.Download,
                                     contentDescription = "Save Offline",
                                     tint = if (isDownloaded && !hasUpdate) theme.success else theme.primary
+                                )
+                            }
+                        } else if (!isAdminUser) {
+                            IconButton(onClick = { onSubmitForAdminApproval(note) }, modifier = Modifier.testTag("submit_admin_${note.id}")) {
+                                Icon(
+                                    imageVector = Icons.Rounded.CloudUpload,
+                                    contentDescription = "Submit for Admin Approval",
+                                    tint = theme.tertiary
                                 )
                             }
                         }
@@ -240,6 +264,7 @@ internal fun SubtopicNotesSection(
 internal fun SubtopicTestsSection(
     accent: Color,
     isAdminUser: Boolean,
+    allowStudentPersonalUploads: Boolean = true,
     htmlTests: List<StudyNote>,
     mcqs: List<McqQuestion>,
     testResults: List<TestResult>,
@@ -256,6 +281,7 @@ internal fun SubtopicTestsSection(
     onConfirmDeleteMcq: (McqQuestion) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
+    val canUploadPersonal = isAdminUser || allowStudentPersonalUploads
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 28.dp),
@@ -270,6 +296,7 @@ internal fun SubtopicTestsSection(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = onUploadHtmlTest,
+                        enabled = canUploadPersonal,
                         colors = ButtonDefaults.buttonColors(containerColor = theme.secondary, contentColor = theme.onSecondary),
                         shape = RoundedCornerShape(12.dp), modifier = Modifier.weight(1f).testTag("upload_html_test_btn")
                     ) {

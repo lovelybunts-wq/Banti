@@ -89,6 +89,7 @@ fun SubtopicDetailScreen(
     sharedDownloadsMap: Map<String, SharedDownloadRecord> = emptyMap(),
     sharedDownloadProgress: Map<String, Float> = emptyMap(),
     isAdminUser: Boolean = false,
+    allowStudentPersonalUploads: Boolean = true,
     lastReturnedScore: TestResult?,
     onDismissScoreBanner: () -> Unit,
     onBack: () -> Unit,
@@ -101,6 +102,7 @@ fun SubtopicDetailScreen(
     onOpenNote: (StudyNote) -> Unit,
     onOpenHtmlTest: (StudyNote) -> Unit,
     onDownloadShared: (StudyNote) -> Unit,
+    onSubmitForAdminApproval: (StudyNote) -> Unit = {},
     onToggleBookmarkNote: (StudyNote) -> Unit,
     onOpenTestResult: (String) -> Unit,
     onDeleteNote: (StudyNote) -> Unit,
@@ -262,7 +264,9 @@ fun SubtopicDetailScreen(
 
                 when (selectedTab) {
                     0 -> SubtopicNotesSection(
-                        accent = accent, isAdminUser = isAdminUser, folderNames = folderNames,
+                        accent = accent, isAdminUser = isAdminUser,
+                        allowStudentPersonalUploads = allowStudentPersonalUploads,
+                        folderNames = folderNames,
                         selectedFolder = selectedFolder, onSelectFolder = { selectedFolder = it },
                         notes = filteredNotes, bookmarks = bookmarks, sharedDownloadsMap = sharedDownloadsMap,
                         sharedDownloadProgress = sharedDownloadProgress,
@@ -272,11 +276,14 @@ fun SubtopicDetailScreen(
                         onAddImageClick = { imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onRequestMaterialWhatsApp = onRequestMaterialWhatsApp,
                         onOpenNote = onOpenNote, onDownloadShared = onDownloadShared,
+                        onSubmitForAdminApproval = onSubmitForAdminApproval,
                         onToggleBookmarkNote = onToggleBookmarkNote, onEditNote = { editingNote = it },
                         onConfirmDeleteNote = { deleteTarget = PendingDeleteTarget.NoteTarget(it) },
                     )
                     1 -> SubtopicTestsSection(
-                        accent = accent, isAdminUser = isAdminUser, htmlTests = htmlTests,
+                        accent = accent, isAdminUser = isAdminUser,
+                        allowStudentPersonalUploads = allowStudentPersonalUploads,
+                        htmlTests = htmlTests,
                         mcqs = filteredMcqs, testResults = testResults,
                         sharedDownloadsMap = sharedDownloadsMap, sharedDownloadProgress = sharedDownloadProgress,
                         onUploadHtmlTest = { pendingIsTestUpload = true; htmlPicker.launch(arrayOf("text/html", "*/*")) },

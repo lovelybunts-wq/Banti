@@ -25,6 +25,7 @@ import com.example.data.model.PersonalNote
 import com.example.data.model.PersonalNoteBlock
 import com.example.data.model.PersonalNoteBlockType
 import com.example.data.model.QuestionAttemptRecord
+import com.example.data.model.StudentUploadSubmission
 import com.example.data.model.StudyNote
 import com.example.data.model.Subject
 import com.example.data.model.TestResult
@@ -309,21 +310,27 @@ class PlatformFeaturesUnitTest {
     }
 
     @Test
-    fun `drive backup manager defines 6 student subfolders and resolves public share links`() {
-        val subfolders = GoogleDriveBackupManager.ALL_STUDENT_SUBFOLDERS
-        assertEquals(6, subfolders.size)
+    fun `drive backup manager defines exact ADMIN and STUDENTS subfolders and resolves public share links`() {
+        val adminFolders = GoogleDriveBackupManager.ALL_ADMIN_SUBFOLDERS
+        assertEquals(4, adminFolders.size)
         assertTrue(
-            subfolders.containsAll(
-                listOf(
-                    "Student Profile",
-                    "Exam Results",
-                    "Test History",
-                    "Notes",
-                    "Bookmarks",
-                    "Progress Reports",
-                )
+            adminFolders.containsAll(
+                listOf("PUBLISHED TESTS", "PDF NOTES", "STUDY MATERIAL", "SUBJECTS")
             )
         )
+
+        val studentFolders = GoogleDriveBackupManager.ALL_STUDENT_SUBFOLDERS
+        assertEquals(4, studentFolders.size)
+        assertTrue(
+            studentFolders.containsAll(
+                listOf("STUDENT DATA", "TEST RESULTS", "PROGRESS REPORTS", "PERSONAL UPLOADS")
+            )
+        )
+
+        assertTrue(GoogleDriveBackupManager.isAuthRevokedError("HTTP (401) Unauthorized"))
+        assertTrue(GoogleDriveBackupManager.isAuthRevokedError("invalid_grant token expired"))
+        assertFalse(GoogleDriveBackupManager.isAuthRevokedError("Network timeout"))
+
         assertEquals(
             "https://drive.google.com/uc?export=download&id=1AbCdEfGhIjKlMnOpQrSt",
             GoogleDriveBackupManager.resolvePublicDriveDownloadUrl("https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrSt/view?usp=sharing")
@@ -380,5 +387,190 @@ class PlatformFeaturesUnitTest {
         adminStore.importPublishedCatalogJson(exported)
         assertTrue(adminStore.contents.value.any { it.id == "pub_note_1" })
         assertFalse(adminStore.contents.value.any { it.id == "draft_note_1" })
+    }
+
+    @Test
+    fun `acceptance scenarios 1 and 2 verify admin gmail claim and prevent student privilege escalation`() {
+        assertTrue(GoogleAuthHelper.isAdminEmail("lovely.bunts@gmail.com", emailVerified = true))
+        assertEquals("admin", GoogleAuthHelper.resolveRole("lovely.bunts@gmail.com", emailVerified = true))
+        // Security check: unverified email must NOT grant admin access
+        assertFalse(GoogleAuthHelper.isAdminEmail("lovely.bunts@gmail.com", emailVerified = false))
+        assertEquals("student", GoogleAuthHelper.resolveRole("lovely.bunts@gmail.com", emailVerified = false))
+        // Any other verified Gmail becomes Student
+        assertEquals("student", GoogleAuthHelper.resolveRole("student.one@gmail.com", emailVerified = true))
+        assertEquals("student", GoogleAuthHelper.resolveRole("student.two@gmail.com", emailVerified = true))
+    }
+
+    @Test
+    fun `acceptance scenarios 3 4 and 9 publish edit manifest version and detect newly published admin tests while keeping student history`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        File(context.filesDir, "test_admin_catalog_s3.json").delete()
+        File(context.filesDir, "test_student_catalog_s3.json").delete()
+        val adminStore = LocalAdminCatalogStore(context, "test_admin_catalog_s3.json")
+        val studentCatalogStore = LocalAdminCatalogStore(context, "test_student_catalog_s3.json")
+
+        val test1 = StudyNote(
+            id = "admin_cbt_1", subjectId = "subj_mp_gk", topicId = "top_1", subtopicId = "sub_1",
+            title = "MP GK Mock #1", noteType = "HTML", htmlContent = LocalFileStorage.buildSampleHtmlMockTest("MP GK Mock #1"),
+            isShared = true, published = true, isMockTest = true
+        )
+        adminStore.upsertSharedContent(test1)
+        adminStore.editSharedContent("admin_cbt_1", "MP GK Mock #1 (Revised)", "Admin Tests", isMockTest = true, published = true)
+        val manifestV1 = adminStore.exportPublishedCatalogJson()
+
+        // Student imports manifest v1 and completes test
+        val studentStore = LocalOfflineStore(context, ownerId = "drive_student_manifest_test")
+        val diff1 = studentCatalogStore.importPublishedCatalogJson(manifestV1)
+        assertTrue(diff1.manifestVersion >= 1L)
+        assertTrue(diff1.newPublishedNotes.any { it.id == "admin_cbt_1" })
+        studentStore.recordTestResult(
+            subjectId = "subj_mp_gk", topicId = "top_1", subtopicId = "sub_1",
+            noteId = "admin_cbt_1", testTitle = "MP GK Mock #1 (Revised)",
+            scoreObtained = 8.0, totalMarks = 10.0, summaryText = "8/10", subjectName = "MP GK"
+        )
+        assertEquals(1, studentStore.testResults.value.size)
+
+        // Admin publishes a second test
+        val test2 = StudyNote(
+            id = "admin_cbt_2", subjectId = "subj_mp_gk", topicId = "top_1", subtopicId = "sub_1",
+            title = "MP GK Mock #2", noteType = "HTML", htmlContent = LocalFileStorage.buildSampleHtmlMockTest("MP GK Mock #2"),
+            isShared = true, published = true, isMockTest = true
+        )
+        adminStore.upsertSharedContent(test2)
+        val manifestV2 = adminStore.exportPublishedCatalogJson()
+        val diff2 = studentCatalogStore.importPublishedCatalogJson(manifestV2)
+        assertTrue(diff2.newPublishedNotes.any { it.id == "admin_cbt_2" })
+        // Old test history must remain completely intact
+        assertEquals(1, studentStore.testResults.value.size)
+        assertEquals(8.0, studentStore.testResults.value.first().scoreObtained, 0.001)
+    }
+
+    @Test
+    fun `acceptance scenarios 5 and 6 isolate student data by vault and restore same gmail on new device`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val studentA = LocalOfflineStore(context, ownerId = "drive_sub_student_A")
+        val studentB = LocalOfflineStore(context, ownerId = "drive_sub_student_B")
+
+        studentA.recordTestResult(
+            subjectId = "subj_polity", topicId = "t_p", subtopicId = "st_p",
+            noteId = "n_p", testTitle = "Polity Test A",
+            scoreObtained = 18.0, totalMarks = 20.0, summaryText = "18/20", subjectName = "Polity",
+            resultId = "res_student_A_only"
+        )
+        studentA.upsertBookmark(
+            BookmarkItem(id = "bmk_A", bookmarkType = BookmarkType.IMPORTANT_QUESTION.name, title = "Article 32")
+        )
+
+        // Student B must never see Student A's results or bookmarks
+        assertFalse(studentB.testResults.value.any { it.id == "res_student_A_only" })
+        assertFalse(studentB.bookmarks.value.any { it.id == "bmk_A" })
+
+        // Device 2 login with same Google account restores Drive snapshot
+        val driveBackupJson = studentA.buildStructuredDrivePayload().fullBackupJson
+        val studentADevice2 = LocalOfflineStore(context, ownerId = "drive_sub_student_A_device2_sim")
+        studentADevice2.mergeDriveBackupJson(driveBackupJson)
+
+        assertTrue(studentADevice2.testResults.value.any { it.id == "res_student_A_only" })
+        assertTrue(studentADevice2.bookmarks.value.any { it.title == "Article 32" })
+    }
+
+    @Test
+    fun `acceptance scenarios 7 and 8 run sample HTML locally and persist deduplicated pendingSyncQueue offline`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val storage = LocalFileStorage(context)
+        val html = LocalFileStorage.buildSampleHtmlMockTest("Offline Polity CBT")
+        assertTrue(html.contains("Offline Polity CBT"))
+        val fileName = storage.writeLocalHtml("drive_offline_q", "note_html_q", "Offline Polity CBT", html)
+        assertNotNull(storage.getLocalFile("drive_offline_q", fileName))
+
+        val store = LocalOfflineStore(context, ownerId = "drive_offline_q")
+        store.recordTestResult(
+            subjectId = "subj_polity", topicId = "t1", subtopicId = "st1", noteId = "note_html_q",
+            testTitle = "Offline Polity CBT", scoreObtained = 9.0, totalMarks = 10.0,
+            summaryText = "9/10", subjectName = "Polity", resultId = "res_q1"
+        )
+        // Updating same result ID deduplicates in pendingSyncQueue
+        store.recordTestResult(
+            subjectId = "subj_polity", topicId = "t1", subtopicId = "st1", noteId = "note_html_q",
+            testTitle = "Offline Polity CBT", scoreObtained = 10.0, totalMarks = 10.0,
+            summaryText = "10/10", subjectName = "Polity", resultId = "res_q1"
+        )
+        assertTrue(store.hasPendingCloudChanges())
+        assertEquals(1, store.pendingSyncCount.value)
+
+        // After cloud sync succeeds, queue clears while data stays preserved
+        store.markSyncedToCloud()
+        assertFalse(store.hasPendingCloudChanges())
+        assertEquals(0, store.pendingSyncCount.value)
+        assertEquals(1, store.testResults.value.size)
+    }
+
+    @Test
+    fun `acceptance scenario 10 keeps student uploads private unless submitted and approved by admin`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val adminStore = LocalAdminCatalogStore(context)
+        val studentStore = LocalOfflineStore(context, ownerId = "drive_priv_student")
+        studentStore.addNote(
+            noteId = "priv_note_1", subjectId = "subj_history", topicId = "t1", subtopicId = "st1",
+            folderName = "My Notes", title = "Student Secret Notes",
+            noteType = com.example.data.model.NoteType.PDF, localFileName = "secret.pdf"
+        )
+        // Private note must NOT be in shared catalog
+        assertFalse(adminStore.contents.value.any { it.title == "Student Secret Notes" })
+
+        // Toggle student upload permission
+        adminStore.setAllowStudentPersonalUploads(false)
+        assertFalse(adminStore.allowStudentPersonalUploads.value)
+        adminStore.setAllowStudentPersonalUploads(true)
+        assertTrue(adminStore.allowStudentPersonalUploads.value)
+
+        // Student submits for admin approval -> still hidden from shared catalog until approved
+        adminStore.submitStudentUploadForApproval(
+            StudentUploadSubmission(
+                id = "subm_priv_note_1",
+                studentUid = "drive_priv_student",
+                studentName = "Rohan",
+                studentEmail = "rohan@gmail.com",
+                subjectId = "subj_history",
+                topicId = "t1",
+                subtopicId = "st1",
+                folderName = "My Notes",
+                title = "Student Secret Notes",
+                noteType = "PDF",
+                localFileName = "secret.pdf"
+            )
+        )
+        assertFalse(adminStore.contents.value.any { it.title == "Student Secret Notes" })
+
+        // Admin approves -> becomes visible in shared published catalog
+        val approved = adminStore.approveStudentSubmission("subm_priv_note_1")
+        assertNotNull(approved)
+        assertTrue(adminStore.contents.value.any { it.title == "Student Secret Notes" && it.published && it.isShared })
+    }
+
+    @Test
+    fun `oauth token resolver returns UserCancelled on RESULT_CANCELED and fallback intent builds cleanly`() = runTest {
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).create().get()
+        val manager = GoogleDriveBackupManager()
+
+        val cancelledRes = manager.resolveTokenFromActivityResult(
+            activity = activity,
+            resultCode = android.app.Activity.RESULT_CANCELED,
+            data = null
+        )
+        assertTrue(cancelledRes is com.example.data.remote.IntentTokenResolution.UserCancelled)
+
+        val fallbackIntent = manager.buildFallbackGoogleSignInIntent(activity)
+        assertNotNull(fallbackIntent)
+    }
+
+    @Test
+    fun `brand color tokens and study themes match LEARN TALENT identity palette`() {
+        assertEquals(androidx.compose.ui.graphics.Color(0xFF071B3A), com.example.ui.theme.BrandColors.DeepNavy)
+        assertEquals(androidx.compose.ui.graphics.Color(0xFF0756C9), com.example.ui.theme.BrandColors.RoyalBlue)
+        assertEquals(androidx.compose.ui.graphics.Color(0xFF55B8F2), com.example.ui.theme.BrandColors.SkyBlue)
+        assertEquals(androidx.compose.ui.graphics.Color(0xFFF5C542), com.example.ui.theme.BrandColors.PremiumGold)
+        assertEquals(com.example.ui.theme.BrandColors.RoyalBlue, com.example.ui.theme.StudyThemeOption.BUNTS_ROYAL_LIGHT.primary)
+        assertEquals(com.example.ui.theme.BrandColors.DeepNavy, com.example.ui.theme.StudyThemeOption.BUNTS_NAVY_DARK.background)
     }
 }

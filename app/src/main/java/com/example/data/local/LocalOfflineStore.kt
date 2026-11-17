@@ -108,9 +108,26 @@ class LocalOfflineStore(
     private val _pdfAnnotations = MutableStateFlow(snapshot.pdfAnnotations.map { it.toModel(ownerId) })
     val pdfAnnotations: StateFlow<List<CloudPdfAnnotationDoc>> = _pdfAnnotations.asStateFlow()
 
+    private val _pendingSyncCount = MutableStateFlow(snapshot.pendingSyncQueue.size)
+    val pendingSyncCount: StateFlow<Int> = _pendingSyncCount.asStateFlow()
+
     fun currentSnapshot(): OfflineVaultSnapshot = snapshot
 
-    fun hasPendingCloudChanges(): Boolean = snapshot.hasUserEdits
+    fun hasPendingCloudChanges(): Boolean = snapshot.hasUserEdits || snapshot.pendingSyncQueue.isNotEmpty()
+
+    private fun enqueueOp(
+        snap: OfflineVaultSnapshot,
+        entityType: String,
+        entityId: String,
+    ): List<PendingSyncOperation> {
+        val op = PendingSyncOperation(
+            opId = "op_${StudyDateUtils.newValidId()}",
+            entityType = entityType,
+            entityId = entityId,
+            createdAtMillis = System.currentTimeMillis(),
+        )
+        return snap.pendingSyncQueue.filterNot { it.entityType == entityType && it.entityId == entityId } + op
+    }
 
     fun exportCurrentSnapshotJson(): String = json.encodeToString(snapshot)
 
@@ -335,13 +352,14 @@ class LocalOfflineStore(
             personalNotes = mergeById(local.personalNotes, remote.personalNotes, { it.id }, { it.updatedAtMillis }),
             bookmarks = mergeById(local.bookmarks, remote.bookmarks, { it.id }, { it.createdAtMillis }),
             pdfAnnotations = mergeById(local.pdfAnnotations, remote.pdfAnnotations, { it.noteId }, { it.updatedAtMillis }),
+            pendingSyncQueue = mergeById(local.pendingSyncQueue, remote.pendingSyncQueue, { "${it.entityType}:${it.entityId}" }, { it.createdAtMillis }),
             hasUserEdits = local.hasUserEdits,
         )
         return mergeMissingDefaultSubjects(merged)
     }
 
     suspend fun markSyncedToCloud() {
-        update { it.copy(hasUserEdits = false) }
+        update { it.copy(pendingSyncQueue = emptyList(), hasUserEdits = false) }
     }
 
     suspend fun updateProfileMeta(displayName: String, email: String?, photoUrl: String?, role: String) {
@@ -463,7 +481,13 @@ class LocalOfflineStore(
             noteType = noteType.name, localFileName = localFileName, htmlContent = htmlContent,
             isMockTest = isMockTest, updatedAtSeconds = nowSeconds(),
         )
-        update { it.copy(notes = it.notes.filterNot { n -> n.id == noteId } + dto, hasUserEdits = true) }
+        update {
+            it.copy(
+                notes = it.notes.filterNot { n -> n.id == noteId } + dto,
+                pendingSyncQueue = enqueueOp(it, "NOTE", noteId),
+                hasUserEdits = true
+            )
+        }
     }
 
     suspend fun renameOrMoveNote(noteId: String, newTitle: String, newFolderName: String) {
@@ -595,6 +619,7 @@ class LocalOfflineStore(
             it.copy(
                 testResults = it.testResults.filterNot { existing -> existing.id == resultId } + dto,
                 studyLogs = it.studyLogs + logDto,
+                pendingSyncQueue = enqueueOp(it, "TEST_RESULT", resultId),
                 hasUserEdits = true
             )
         }
@@ -703,6 +728,7 @@ class LocalOfflineStore(
         update { snap ->
             snap.copy(
                 personalNotes = snap.personalNotes.filterNot { it.id == dto.id } + dto,
+                pendingSyncQueue = enqueueOp(snap, "PERSONAL_NOTE", dto.id),
                 hasUserEdits = true
             )
         }
@@ -729,13 +755,14 @@ class LocalOfflineStore(
         update { snap ->
             snap.copy(
                 bookmarks = snap.bookmarks.filterNot { it.id == dto.id } + dto,
+                pendingSyncQueue = enqueueOp(snap, "BOOKMARK", dto.id),
                 hasUserEdits = true
             )
         }
     }
 
     suspend fun deleteBookmark(bookmarkId: String) {
-        update { it.copy(bookmarks = it.bookmarks.filterNot { b -> b.id == bookmarkId }, hasUserEdits = true) }
+        update { it.copy(bookmarks = it.bookmarks.filterNot { b -> b.id == bookmarkId }, pendingSyncQueue = enqueueOp(it, "BOOKMARK_DEL", bookmarkId), hasUserEdits = true) }
     }
 
     suspend fun savePdfAnnotationDoc(noteId: String, annotationsJson: String, updatedAtMillis: Long) {
@@ -743,6 +770,7 @@ class LocalOfflineStore(
         update { snap ->
             snap.copy(
                 pdfAnnotations = snap.pdfAnnotations.filterNot { it.noteId == noteId } + dto,
+                pendingSyncQueue = enqueueOp(snap, "PDF_ANNOTATION", noteId),
                 hasUserEdits = true
             )
         }
@@ -784,6 +812,7 @@ class LocalOfflineStore(
         _personalNotes.value = snapshot.personalNotes.map { it.toModel(ownerId) }.sortedByDescending { it.updatedAtMillis }
         _bookmarks.value = snapshot.bookmarks.map { it.toModel(ownerId) }.sortedByDescending { it.createdAtMillis }
         _pdfAnnotations.value = snapshot.pdfAnnotations.map { it.toModel(ownerId) }
+        _pendingSyncCount.value = snapshot.pendingSyncQueue.size
     }
 
     private suspend fun persist(snap: OfflineVaultSnapshot) = withContext(Dispatchers.IO) {

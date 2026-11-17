@@ -24,6 +24,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.model.StudyNote
 import com.example.data.model.StudentSummary
+import com.example.data.model.StudentUploadSubmission
 import com.example.data.model.TestResult
 import com.example.data.model.WhatsAppRequestRecord
 import com.example.ui.MainViewModel
@@ -195,17 +197,83 @@ internal fun AdminStudentsTab(
 internal fun AdminRequestsTab(
     currentWhatsAppDigits: String,
     requests: List<WhatsAppRequestRecord>,
+    allowStudentUploads: Boolean = true,
+    pendingSubmissions: List<StudentUploadSubmission> = emptyList(),
+    onToggleAllowStudentUploads: (Boolean) -> Unit = {},
+    onApproveSubmission: (String) -> Unit = {},
+    onRejectSubmission: (String) -> Unit = {},
     onSaveWhatsAppDigits: (String) -> Unit,
     onUpdateStatus: (requestId: String, status: String) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
     var phoneInput by remember(currentWhatsAppDigits) { mutableStateOf(currentWhatsAppDigits) }
+    val pendingApprovals = remember(pendingSubmissions) {
+        pendingSubmissions.filter { it.status == "PENDING_APPROVAL" }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 32.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        item {
+            Tactile3DCard(accentColor = theme.tertiary, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Allow Student Personal Uploads", style = MaterialTheme.typography.titleSmall, color = theme.onSurface)
+                        Text(
+                            "छात्रों के अपलोड डिफ़ॉल्ट रूप से उनके निजी Drive/डिवाइस में रहते हैं; Admin स्वीकृति के बाद ही सभी को दिखते हैं।",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = theme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = allowStudentUploads,
+                        onCheckedChange = onToggleAllowStudentUploads,
+                        modifier = Modifier.testTag("admin_allow_student_uploads_switch")
+                    )
+                }
+            }
+        }
+
+        if (pendingApprovals.isNotEmpty()) {
+            item {
+                Text(
+                    "Pending Student Upload Approvals (${pendingApprovals.size})",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = theme.tertiary
+                )
+            }
+            items(pendingApprovals, key = { it.id }) { sub ->
+                Tactile3DCard(accentColor = theme.tertiary, lipDepth = 3.dp, modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(sub.title, style = MaterialTheme.typography.titleSmall, color = theme.onSurface)
+                            Text("By: ${sub.studentName} (${sub.studentEmail})", style = MaterialTheme.typography.labelSmall, color = theme.onSurfaceVariant)
+                        }
+                        Tactile3DBadge(text = sub.noteType, color = theme.primary)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { onRejectSubmission(sub.id) },
+                            modifier = Modifier.weight(1f).testTag("reject_submission_${sub.id}")
+                        ) { Text("Decline") }
+                        Button(
+                            onClick = { onApproveSubmission(sub.id) },
+                            colors = ButtonDefaults.buttonColors(containerColor = theme.success, contentColor = theme.onPrimary),
+                            modifier = Modifier.weight(1f).testTag("approve_submission_${sub.id}")
+                        ) { Text("Approve & Publish") }
+                    }
+                }
+            }
+        }
+
         item {
             Tactile3DCard(accentColor = theme.secondary, modifier = Modifier.fillMaxWidth()) {
                 Text("Official Admin WhatsApp Support Number", style = MaterialTheme.typography.titleSmall, color = theme.onSurface)

@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.data.model.FullLengthExam
 import com.example.data.model.McqQuestion
 import com.example.data.model.StudentSummary
+import com.example.data.model.StudentUploadSubmission
 import com.example.data.model.StudyNote
 import com.example.data.model.Subject
 import com.example.data.model.Subtopic
@@ -25,6 +26,8 @@ import java.io.File
 
 @Serializable
 data class SharedAdminCatalogBundle(
+    val manifestVersion: Long = 1L,
+    val allowStudentPersonalUploads: Boolean = true,
     val subjects: List<Subject> = emptyList(),
     val topics: List<Topic> = emptyList(),
     val subtopics: List<Subtopic> = emptyList(),
@@ -32,21 +35,36 @@ data class SharedAdminCatalogBundle(
     val videos: List<VideoLink> = emptyList(),
     val mcqs: List<McqQuestion> = emptyList(),
     val fullLengthExams: List<FullLengthExam> = emptyList(),
+    val pendingSubmissions: List<StudentUploadSubmission> = emptyList(),
     val studentSummaries: List<StudentSummary> = emptyList(),
     val whatsAppRequests: List<WhatsAppRequestRecord> = emptyList(),
     val studentResultsMap: Map<String, List<TestResult>> = emptyMap(),
     val updatedAtMillis: Long = System.currentTimeMillis(),
 )
 
-class LocalAdminCatalogStore(private val context: Context) {
+data class CatalogImportDiff(
+    val manifestVersion: Long,
+    val newPublishedNotes: List<StudyNote>,
+)
+
+class LocalAdminCatalogStore(
+    private val context: Context,
+    storeFileName: String = "learn_talent_admin_catalog.json",
+) {
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
     private val mutex = Mutex()
-    private val storeFile = File(context.filesDir, "learn_talent_admin_catalog.json")
+    private val storeFile = File(context.filesDir, storeFileName)
 
     private var bundle: SharedAdminCatalogBundle = loadBundle()
+
+    private val _manifestVersion = MutableStateFlow(bundle.manifestVersion)
+    val manifestVersion: StateFlow<Long> = _manifestVersion.asStateFlow()
+
+    private val _allowStudentPersonalUploads = MutableStateFlow(bundle.allowStudentPersonalUploads)
+    val allowStudentPersonalUploads: StateFlow<Boolean> = _allowStudentPersonalUploads.asStateFlow()
 
     private val _subjects = MutableStateFlow(bundle.subjects)
     val subjects: StateFlow<List<Subject>> = _subjects.asStateFlow()
@@ -69,6 +87,9 @@ class LocalAdminCatalogStore(private val context: Context) {
     private val _fullLengthExams = MutableStateFlow(bundle.fullLengthExams)
     val fullLengthExams: StateFlow<List<FullLengthExam>> = _fullLengthExams.asStateFlow()
 
+    private val _pendingSubmissions = MutableStateFlow(bundle.pendingSubmissions)
+    val pendingSubmissions: StateFlow<List<StudentUploadSubmission>> = _pendingSubmissions.asStateFlow()
+
     private val _studentSummaries = MutableStateFlow(bundle.studentSummaries)
     val studentSummaries: StateFlow<List<StudentSummary>> = _studentSummaries.asStateFlow()
 
@@ -77,6 +98,8 @@ class LocalAdminCatalogStore(private val context: Context) {
 
     fun exportPublishedCatalogJson(): String {
         val publishable = bundle.copy(
+            manifestVersion = bundle.manifestVersion,
+            allowStudentPersonalUploads = bundle.allowStudentPersonalUploads,
             subjects = bundle.subjects.filter { it.published },
             topics = bundle.topics.filter { it.published },
             subtopics = bundle.subtopics.filter { it.published },
@@ -84,6 +107,7 @@ class LocalAdminCatalogStore(private val context: Context) {
             videos = bundle.videos.filter { it.published },
             mcqs = bundle.mcqs.filter { it.published },
             fullLengthExams = bundle.fullLengthExams.filter { it.published },
+            pendingSubmissions = emptyList(),
             studentSummaries = emptyList(),
             whatsAppRequests = emptyList(),
             studentResultsMap = emptyMap(),
@@ -92,17 +116,71 @@ class LocalAdminCatalogStore(private val context: Context) {
         return json.encodeToString(publishable)
     }
 
-    suspend fun importPublishedCatalogJson(rawJson: String) {
+    suspend fun importPublishedCatalogJson(rawJson: String): CatalogImportDiff {
         val parsed = json.decodeFromString<SharedAdminCatalogBundle>(rawJson)
+        val previousIds = bundle.contents.filter { it.published }.map { it.id }.toSet()
+        val incomingPublishedNotes = parsed.contents.filter { it.published }.map { it.copy(isShared = true, published = true) }
+        val newNotes = incomingPublishedNotes.filter { it.id !in previousIds }
+
         update { current ->
             current.copy(
-                subjects = parsed.subjects.map { it.copy(isShared = true, published = true) },
-                topics = parsed.topics.map { it.copy(isShared = true, published = true) },
-                subtopics = parsed.subtopics.map { it.copy(isShared = true, published = true) },
-                contents = parsed.contents.map { it.copy(isShared = true, published = true) },
-                videos = parsed.videos.map { it.copy(isShared = true, published = true) },
-                mcqs = parsed.mcqs.map { it.copy(isShared = true, published = true) },
-                fullLengthExams = parsed.fullLengthExams.map { it.copy(isShared = true, published = true) },
+                manifestVersion = parsed.manifestVersion.coerceAtLeast(current.manifestVersion),
+                allowStudentPersonalUploads = parsed.allowStudentPersonalUploads,
+                subjects = parsed.subjects.filter { it.published }.map { it.copy(isShared = true, published = true) },
+                topics = parsed.topics.filter { it.published }.map { it.copy(isShared = true, published = true) },
+                subtopics = parsed.subtopics.filter { it.published }.map { it.copy(isShared = true, published = true) },
+                contents = incomingPublishedNotes,
+                videos = parsed.videos.filter { it.published }.map { it.copy(isShared = true, published = true) },
+                mcqs = parsed.mcqs.filter { it.published }.map { it.copy(isShared = true, published = true) },
+                fullLengthExams = parsed.fullLengthExams.filter { it.published }.map { it.copy(isShared = true, published = true) },
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
+        return CatalogImportDiff(manifestVersion = parsed.manifestVersion, newPublishedNotes = newNotes)
+    }
+
+    suspend fun setAllowStudentPersonalUploads(allowed: Boolean) {
+        update { b ->
+            b.copy(
+                allowStudentPersonalUploads = allowed,
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    suspend fun upsertSharedSubject(
+        nameEn: String,
+        nameHi: String?,
+        iconKey: String,
+        colorHex: String,
+        sortOrder: Long,
+    ) {
+        val subj = Subject(
+            id = "shared_subj_${StudyDateUtils.newValidId()}",
+            userId = "admin",
+            nameEn = nameEn.trim().take(80),
+            nameHi = nameHi?.trim()?.takeIf { it.isNotEmpty() }?.take(80),
+            iconKey = iconKey.take(40),
+            colorHex = colorHex.take(20),
+            sortOrder = sortOrder,
+            isShared = true,
+            published = true,
+        )
+        update { b ->
+            b.copy(
+                subjects = b.subjects + subj,
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    suspend fun deleteSharedSubject(subjectId: String) {
+        update { b ->
+            b.copy(
+                subjects = b.subjects.filterNot { it.id == subjectId },
+                manifestVersion = b.manifestVersion + 1L,
                 updatedAtMillis = System.currentTimeMillis(),
             )
         }
@@ -112,6 +190,33 @@ class LocalAdminCatalogStore(private val context: Context) {
         update { b ->
             b.copy(
                 contents = b.contents.filterNot { it.id == note.id } + note.copy(isShared = true),
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    suspend fun editSharedContent(
+        noteId: String,
+        title: String,
+        folderName: String,
+        isMockTest: Boolean,
+        published: Boolean,
+    ) {
+        update { b ->
+            b.copy(
+                contents = b.contents.map { item ->
+                    if (item.id == noteId) {
+                        item.copy(
+                            title = title.trim().take(160),
+                            folderName = folderName.trim().take(80),
+                            isMockTest = isMockTest,
+                            published = published,
+                            version = item.version + 1L,
+                        )
+                    } else item
+                },
+                manifestVersion = b.manifestVersion + 1L,
                 updatedAtMillis = System.currentTimeMillis(),
             )
         }
@@ -121,6 +226,7 @@ class LocalAdminCatalogStore(private val context: Context) {
         update { b ->
             b.copy(
                 contents = b.contents.map { if (it.id == noteId) it.copy(published = published) else it },
+                manifestVersion = b.manifestVersion + 1L,
                 updatedAtMillis = System.currentTimeMillis(),
             )
         }
@@ -128,7 +234,11 @@ class LocalAdminCatalogStore(private val context: Context) {
 
     suspend fun deleteSharedContent(noteId: String) {
         update { b ->
-            b.copy(contents = b.contents.filterNot { it.id == noteId })
+            b.copy(
+                contents = b.contents.filterNot { it.id == noteId },
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
         }
     }
 
@@ -148,11 +258,23 @@ class LocalAdminCatalogStore(private val context: Context) {
             isShared = true,
             published = true,
         )
-        update { b -> b.copy(topics = b.topics + topic) }
+        update { b ->
+            b.copy(
+                topics = b.topics + topic,
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
     }
 
     suspend fun deleteSharedTopic(topicId: String) {
-        update { b -> b.copy(topics = b.topics.filterNot { it.id == topicId }) }
+        update { b ->
+            b.copy(
+                topics = b.topics.filterNot { it.id == topicId },
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
     }
 
     suspend fun upsertSharedSubtopic(subjectId: String, topicId: String, name: String) {
@@ -165,23 +287,109 @@ class LocalAdminCatalogStore(private val context: Context) {
             isShared = true,
             published = true,
         )
-        update { b -> b.copy(subtopics = b.subtopics + sub) }
+        update { b ->
+            b.copy(
+                subtopics = b.subtopics + sub,
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
     }
 
     suspend fun deleteSharedSubtopic(subtopicId: String) {
-        update { b -> b.copy(subtopics = b.subtopics.filterNot { it.id == subtopicId }) }
+        update { b ->
+            b.copy(
+                subtopics = b.subtopics.filterNot { it.id == subtopicId },
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    suspend fun upsertSharedFullLengthExam(name: String, subtitle: String?) {
+        val exam = FullLengthExam(
+            id = "shared_fl_${StudyDateUtils.newValidId()}",
+            userId = "admin",
+            name = name.trim().take(120),
+            subtitle = subtitle?.trim()?.takeIf { it.isNotEmpty() }?.take(200),
+            isShared = true,
+            published = true,
+        )
+        update { b ->
+            b.copy(
+                fullLengthExams = b.fullLengthExams + exam,
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
     }
 
     suspend fun deleteSharedVideo(videoId: String) {
-        update { b -> b.copy(videos = b.videos.filterNot { it.id == videoId }) }
+        update { b -> b.copy(videos = b.videos.filterNot { it.id == videoId }, manifestVersion = b.manifestVersion + 1L) }
     }
 
     suspend fun deleteSharedMcq(mcqId: String) {
-        update { b -> b.copy(mcqs = b.mcqs.filterNot { it.id == mcqId }) }
+        update { b -> b.copy(mcqs = b.mcqs.filterNot { it.id == mcqId }, manifestVersion = b.manifestVersion + 1L) }
     }
 
     suspend fun deleteSharedFullLengthExam(examId: String) {
-        update { b -> b.copy(fullLengthExams = b.fullLengthExams.filterNot { it.id == examId }) }
+        update { b -> b.copy(fullLengthExams = b.fullLengthExams.filterNot { it.id == examId }, manifestVersion = b.manifestVersion + 1L) }
+    }
+
+    suspend fun submitStudentUploadForApproval(submission: StudentUploadSubmission) {
+        val clean = submission.copy(
+            id = submission.id.ifBlank { "subm_${StudyDateUtils.newValidId()}" },
+            status = "PENDING_APPROVAL",
+            submittedAtMillis = System.currentTimeMillis(),
+        )
+        update { b ->
+            b.copy(
+                pendingSubmissions = listOf(clean) + b.pendingSubmissions.filterNot { it.id == clean.id }
+            )
+        }
+    }
+
+    suspend fun approveStudentSubmission(submissionId: String): StudyNote? {
+        val sub = bundle.pendingSubmissions.firstOrNull { it.id == submissionId } ?: return null
+        val approvedNote = StudyNote(
+            id = "shared_from_${sub.id}",
+            userId = "admin",
+            subjectId = sub.subjectId,
+            topicId = sub.topicId,
+            subtopicId = sub.subtopicId,
+            folderName = sub.folderName.ifBlank { "Approved Student Contributions" },
+            title = sub.title,
+            noteType = sub.noteType,
+            localFileName = sub.localFileName,
+            htmlContent = sub.htmlContent,
+            downloadUrl = sub.downloadUrl,
+            isShared = true,
+            published = true,
+            version = 1L,
+            fileSizeBytes = sub.fileSizeBytes,
+            isMockTest = sub.isMockTest,
+        )
+        update { b ->
+            b.copy(
+                contents = b.contents.filterNot { it.id == approvedNote.id } + approvedNote,
+                pendingSubmissions = b.pendingSubmissions.map {
+                    if (it.id == submissionId) it.copy(status = "APPROVED") else it
+                },
+                manifestVersion = b.manifestVersion + 1L,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+        }
+        return approvedNote
+    }
+
+    suspend fun rejectStudentSubmission(submissionId: String) {
+        update { b ->
+            b.copy(
+                pendingSubmissions = b.pendingSubmissions.map {
+                    if (it.id == submissionId) it.copy(status = "REJECTED") else it
+                }
+            )
+        }
     }
 
     suspend fun submitWhatsAppRequest(record: WhatsAppRequestRecord) {
@@ -216,6 +424,8 @@ class LocalAdminCatalogStore(private val context: Context) {
             withContext(Dispatchers.IO) {
                 runCatching { storeFile.writeText(json.encodeToString(next), Charsets.UTF_8) }
             }
+            _manifestVersion.value = next.manifestVersion
+            _allowStudentPersonalUploads.value = next.allowStudentPersonalUploads
             _subjects.value = next.subjects
             _topics.value = next.topics
             _subtopics.value = next.subtopics
@@ -223,6 +433,7 @@ class LocalAdminCatalogStore(private val context: Context) {
             _videos.value = next.videos
             _mcqs.value = next.mcqs
             _fullLengthExams.value = next.fullLengthExams
+            _pendingSubmissions.value = next.pendingSubmissions
             _studentSummaries.value = next.studentSummaries
             _whatsAppRequests.value = next.whatsAppRequests
         }

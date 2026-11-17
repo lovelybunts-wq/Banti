@@ -35,6 +35,7 @@ data class LocalAppSettings(
     val driveUserPhotoUrl: String = "",
     val sharedCatalogUrl: String = "",
     val lastDriveSyncMessage: String = "",
+    val lastSeenCatalogVersion: Long = 0L,
 )
 
 class UserPreferencesManager(private val context: Context) {
@@ -58,6 +59,7 @@ class UserPreferencesManager(private val context: Context) {
         val DRIVE_USER_PHOTO_URL = stringPreferencesKey("drive_user_photo_url")
         val SHARED_CATALOG_URL = stringPreferencesKey("shared_catalog_url")
         val LAST_DRIVE_SYNC_MESSAGE = stringPreferencesKey("last_drive_sync_message")
+        val LAST_SEEN_CATALOG_VERSION = longPreferencesKey("last_seen_catalog_version")
         fun seededKey(uid: String) = booleanPreferencesKey("seeded_$uid")
     }
 
@@ -82,6 +84,7 @@ class UserPreferencesManager(private val context: Context) {
             driveUserPhotoUrl = prefs[Keys.DRIVE_USER_PHOTO_URL] ?: "",
             sharedCatalogUrl = prefs[Keys.SHARED_CATALOG_URL] ?: "",
             lastDriveSyncMessage = prefs[Keys.LAST_DRIVE_SYNC_MESSAGE] ?: "",
+            lastSeenCatalogVersion = prefs[Keys.LAST_SEEN_CATALOG_VERSION] ?: 0L,
         )
     }
 
@@ -138,6 +141,10 @@ class UserPreferencesManager(private val context: Context) {
 
     suspend fun setSharedCatalogUrl(url: String) {
         context.dataStore.edit { it[Keys.SHARED_CATALOG_URL] = url.trim() }
+    }
+
+    suspend fun setLastSeenCatalogVersion(version: Long) {
+        context.dataStore.edit { it[Keys.LAST_SEEN_CATALOG_VERSION] = version }
     }
 
     suspend fun setDriveUserSession(userId: String, email: String, name: String, photoUrl: String = "") {

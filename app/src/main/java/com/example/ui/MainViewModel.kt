@@ -4,6 +4,9 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -33,6 +36,7 @@ import com.example.data.model.QuestionAttemptRecord
 import com.example.data.model.RecentActivityItem
 import com.example.data.model.RevisionDiaryEntry
 import com.example.data.model.StudentSummary
+import com.example.data.model.StudentUploadSubmission
 import com.example.data.model.StudyLog
 import com.example.data.model.StudyNote
 import com.example.data.model.Subject
@@ -90,15 +94,21 @@ class MainViewModel(
     val signedInEmail: String? = sessionUser.email.takeIf { it.isNotBlank() }
     val initialDisplayName: String = sessionUser.displayName
     val initialPhotoUrl: String? = sessionUser.photoUrl
-    val isAdminUser: Boolean = !isOfflineAccount && GoogleAuthHelper.isAdminEmail(signedInEmail)
+    val isAdminUser: Boolean = !isOfflineAccount && GoogleAuthHelper.isAdminEmail(signedInEmail, sessionUser.emailVerified)
 
     private val jsonCodec = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     private var cachedDriveToken: String? = initialDriveToken
     private var pendingActionAfterConsent: String = "SYNC" // "SYNC" | "RESTORE" | "PUBLISH_CATALOG"
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val _toastEvents = MutableSharedFlow<String>(extraBufferCapacity = 12)
     val toastEvents = _toastEvents.asSharedFlow()
+
+    private val _isNetworkOnline = MutableStateFlow(LocalFileStorage.isOnline(appContext))
+    val isNetworkOnline: StateFlow<Boolean> = _isNetworkOnline.asStateFlow()
+
+    val pendingSyncCount: StateFlow<Int> = offlineStore.pendingSyncCount
 
     private val _lastReturnedScore = MutableStateFlow<TestResult?>(null)
     val lastReturnedScore: StateFlow<TestResult?> = _lastReturnedScore.asStateFlow()
@@ -125,6 +135,8 @@ class MainViewModel(
 
     private val _publishedCatalogLink = MutableStateFlow<String?>(null)
     val publishedCatalogLink: StateFlow<String?> = _publishedCatalogLink.asStateFlow()
+
+    val allowStudentPersonalUploads: StateFlow<Boolean> = adminCatalogStore.allowStudentPersonalUploads
 
     val localSettings: StateFlow<LocalAppSettings> = prefs.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), LocalAppSettings())
@@ -233,9 +245,15 @@ class MainViewModel(
             .catch { emit(emptyList()) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
 
+    val adminPendingSubmissions: StateFlow<List<StudentUploadSubmission>> =
+        (if (isAdminUser) adminCatalogStore.pendingSubmissions else flowOf(emptyList()))
+            .catch { emit(emptyList()) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
+
     init {
+        registerConnectivityObserver()
         viewModelScope.launch {
-            val role = GoogleAuthHelper.resolveRole(signedInEmail)
+            val role = GoogleAuthHelper.resolveRole(signedInEmail, sessionUser.emailVerified)
             offlineStore.updateProfileMeta(
                 displayName = initialDisplayName,
                 email = signedInEmail,
@@ -264,8 +282,11 @@ class MainViewModel(
                     )
                 }
 
-                // Attempt automatic Drive restore + merge + sync on Gmail login
+                // Attempt automatic Drive restore + merge + sync + manifest check on Gmail login
                 if (LocalFileStorage.isOnline(appContext)) {
+                    if (savedSettings.sharedCatalogUrl.isNotBlank() && !isAdminUser) {
+                        checkPublishedManifestUpdates(savedSettings.sharedCatalogUrl, silent = true)
+                    }
                     val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
                     cachedDriveToken = token
                     if (!token.isNullOrBlank()) {
@@ -291,6 +312,54 @@ class MainViewModel(
                 )
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        val cb = networkCallback ?: return
+        runCatching {
+            val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            cm?.unregisterNetworkCallback(cb)
+        }
+        networkCallback = null
+    }
+
+    private fun registerConnectivityObserver() {
+        runCatching {
+            val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    _isNetworkOnline.value = true
+                    viewModelScope.launch {
+                        val settings = prefs.settingsFlow.first()
+                        if (!isOfflineAccount && settings.cloudSyncEnabled && offlineStore.hasPendingCloudChanges()) {
+                            val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
+                            cachedDriveToken = token
+                            if (!token.isNullOrBlank()) {
+                                performDriveUploadOnly(token, silent = true)
+                            }
+                        }
+                        if (settings.sharedCatalogUrl.isNotBlank() && !isAdminUser) {
+                            checkPublishedManifestUpdates(settings.sharedCatalogUrl, silent = true)
+                        }
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    _isNetworkOnline.value = LocalFileStorage.isOnline(appContext)
+                    if (!_isNetworkOnline.value && !isOfflineAccount && offlineStore.hasPendingCloudChanges()) {
+                        _driveSyncState.value = DriveSyncUiState.PendingOffline("Offline — saved locally (${offlineStore.pendingSyncCount.value} queued)")
+                    }
+                }
+            }
+            cm.registerDefaultNetworkCallback(cb)
+            networkCallback = cb
+        }
+    }
+
+    fun clearSessionCaches() {
+        cachedDriveToken = null
+        _lastReturnedScore.value = null
     }
 
     private fun <T> Flow<T>.toUiStateFlow(label: String): StateFlow<UiState<T>> =
@@ -344,18 +413,25 @@ class MainViewModel(
         }
     }
 
-    fun onConsentIntentResult(activity: Activity, data: Intent?) {
-        val token = driveManager.extractTokenFromIntent(activity, data)
-        if (token.isNullOrBlank()) {
-            _driveSyncState.value = DriveSyncUiState.NeedAuth("Google Drive authorization cancelled")
-            return
-        }
-        cachedDriveToken = token
+    fun onConsentIntentResult(activity: Activity, resultCode: Int, data: Intent?) {
         viewModelScope.launch {
-            when (pendingActionAfterConsent) {
-                "RESTORE" -> performDriveRestoreOnly(token)
-                "PUBLISH_CATALOG" -> publishAdminCatalogWithToken(token)
-                else -> performDriveRestoreAndSync(token, mergeFirst = true, silent = false)
+            when (val resolution = driveManager.resolveTokenFromActivityResult(activity, resultCode, data)) {
+                is com.example.data.remote.IntentTokenResolution.Token -> {
+                    val token = resolution.accessToken
+                    cachedDriveToken = token
+                    when (pendingActionAfterConsent) {
+                        "RESTORE" -> performDriveRestoreOnly(token)
+                        "PUBLISH_CATALOG" -> publishAdminCatalogWithToken(token)
+                        else -> performDriveRestoreAndSync(token, mergeFirst = true, silent = false)
+                    }
+                }
+                is com.example.data.remote.IntentTokenResolution.UserCancelled -> {
+                    _driveSyncState.value = DriveSyncUiState.NeedAuth("Google Drive authorization cancelled")
+                }
+                is com.example.data.remote.IntentTokenResolution.Failed -> {
+                    _driveSyncState.value = DriveSyncUiState.NeedAuth(resolution.message)
+                    _toastEvents.tryEmit("Drive permission retry needed: ${resolution.message}")
+                }
             }
         }
     }
@@ -430,8 +506,12 @@ class MainViewModel(
             _toastEvents.tryEmit("Google Drive से सारा डेटा सफलतापूर्वक वापस आ गया!")
         }.onFailure { err ->
             val msg = err.message ?: "Restore failed"
-            if (msg.contains("401")) cachedDriveToken = null
-            _driveSyncState.value = DriveSyncUiState.Error(msg)
+            if (GoogleDriveBackupManager.isAuthRevokedError(msg)) {
+                cachedDriveToken = null
+                _driveSyncState.value = DriveSyncUiState.NeedAuth("Google Drive अनुमति समाप्त या रद्द हुई — पुनः Authorize करें")
+            } else {
+                _driveSyncState.value = DriveSyncUiState.Error(msg)
+            }
             _toastEvents.tryEmit(msg)
         }
     }
@@ -455,7 +535,7 @@ class MainViewModel(
             displayName = initialDisplayName,
             email = signedInEmail,
             photoUrl = initialPhotoUrl,
-            role = GoogleAuthHelper.resolveRole(signedInEmail)
+            role = GoogleAuthHelper.resolveRole(signedInEmail, sessionUser.emailVerified)
         )
     }
 
@@ -474,8 +554,12 @@ class MainViewModel(
             }
         }.onFailure { err ->
             val msg = err.message ?: "Google Drive sync failed"
-            if (msg.contains("401")) cachedDriveToken = null
-            _driveSyncState.value = DriveSyncUiState.Error(msg)
+            if (GoogleDriveBackupManager.isAuthRevokedError(msg)) {
+                cachedDriveToken = null
+                _driveSyncState.value = DriveSyncUiState.NeedAuth("Google Drive अनुमति समाप्त या रद्द हुई — पुनः Authorize करें")
+            } else {
+                _driveSyncState.value = DriveSyncUiState.Error(msg)
+            }
             if (!silent) _toastEvents.tryEmit(msg)
         }
     }
@@ -611,6 +695,10 @@ class MainViewModel(
     }
 
     fun uploadFullLengthHtmlTest(examId: String, examName: String, title: String, uri: Uri) {
+        if (!isAdminUser && !adminCatalogStore.allowStudentPersonalUploads.value) {
+            _toastEvents.tryEmit("Admin द्वारा व्यक्तिगत फ़ाइल अपलोड अभी बंद किया गया है।")
+            return
+        }
         viewModelScope.launch {
             val noteId = "note_${StudyDateUtils.newValidId()}"
             try {
@@ -629,7 +717,7 @@ class MainViewModel(
                     htmlContent = htmlText,
                     isMockTest = true
                 )
-                _toastEvents.tryEmit("HTML टेस्ट '$finalTitle' सेव हो गया!")
+                _toastEvents.tryEmit("HTML टेस्ट '$finalTitle' प्राइवेट सेव हो गया!")
                 scheduleAutoSyncIfEligible()
             } catch (e: CancellationException) {
                 throw e
@@ -662,6 +750,10 @@ class MainViewModel(
         subjectId: String, topicId: String, subtopicId: String, folderName: String,
         customTitle: String, noteType: NoteType, uri: Uri, isMockTest: Boolean = noteType == NoteType.HTML,
     ) {
+        if (!isAdminUser && !adminCatalogStore.allowStudentPersonalUploads.value) {
+            _toastEvents.tryEmit("Admin द्वारा व्यक्तिगत फ़ाइल अपलोड अभी बंद किया गया है।")
+            return
+        }
         viewModelScope.launch {
             val noteId = "note_${StudyDateUtils.newValidId()}"
             val ext = when (noteType) {
@@ -672,13 +764,49 @@ class MainViewModel(
                 val htmlText = if (noteType == NoteType.HTML && file.length() <= 190_000L) file.readText(Charsets.UTF_8) else null
                 val finalTitle = customTitle.ifBlank { fileName }
                 offlineStore.addNote(noteId, subjectId, topicId, subtopicId, folderName, finalTitle, noteType, fileName, htmlText, isMockTest)
-                _toastEvents.tryEmit("Saved '$finalTitle'")
+                _toastEvents.tryEmit("Saved privately: '$finalTitle'")
                 scheduleAutoSyncIfEligible()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _toastEvents.tryEmit(e.message ?: "Failed to import file")
             }
+        }
+    }
+
+    fun submitPersonalNoteForAdminApproval(note: StudyNote) {
+        if (note.isShared) return
+        viewModelScope.launch {
+            val resolvedFile = fileStorage.resolveAnyNoteFile(storageOwnerId, note.id, note.localFileName, isShared = false)
+            var sharedCopyName: String? = note.localFileName
+            var downloadUrl: String? = note.downloadUrl
+            if (resolvedFile != null && resolvedFile.exists()) {
+                val destName = "subm_${note.id}_${resolvedFile.name}"
+                runCatching {
+                    File(fileStorage.sharedCacheDir(), destName).writeBytes(resolvedFile.readBytes())
+                    sharedCopyName = destName
+                }
+            }
+            adminCatalogStore.submitStudentUploadForApproval(
+                StudentUploadSubmission(
+                    id = "subm_${note.id}",
+                    studentUid = storageOwnerId,
+                    studentName = initialDisplayName,
+                    studentEmail = signedInEmail.orEmpty(),
+                    subjectId = note.subjectId,
+                    topicId = note.topicId,
+                    subtopicId = note.subtopicId,
+                    folderName = note.folderName,
+                    title = note.title,
+                    noteType = note.noteType,
+                    isMockTest = note.isMockTest,
+                    localFileName = sharedCopyName,
+                    htmlContent = note.htmlContent,
+                    downloadUrl = downloadUrl,
+                    fileSizeBytes = resolvedFile?.length() ?: note.fileSizeBytes,
+                )
+            )
+            _toastEvents.tryEmit("'${note.title}' Admin स्वीकृति के लिए भेजा गया (जब तक Approve न हो, यह केवल आपके पास Private रहेगा)।")
         }
     }
 
@@ -1179,28 +1307,83 @@ class MainViewModel(
     // Student Catalog Sync from Admin Google Drive Share Link
     fun importSharedCatalogFromUrl(urlOrId: String) {
         viewModelScope.launch {
-            if (!LocalFileStorage.isOnline(appContext)) {
-                _toastEvents.tryEmit("इंटरनेट कनेक्शन जांचें।")
-                return@launch
-            }
-            driveManager.downloadPublicDriveUrl(urlOrId).onSuccess { bytes ->
-                val raw = String(bytes, Charsets.UTF_8)
-                runCatching {
-                    adminCatalogStore.importPublishedCatalogJson(raw)
-                }.onSuccess {
-                    prefs.setSharedCatalogUrl(urlOrId)
-                    _publishedCatalogLink.value = urlOrId
-                    _toastEvents.tryEmit("Admin Catalog अपडेट हो गया!")
-                }.onFailure { err ->
-                    _toastEvents.tryEmit("Invalid catalog JSON: ${err.message}")
-                }
-            }.onFailure { err ->
-                _toastEvents.tryEmit(err.message ?: "Failed to download Admin Catalog")
-            }
+            checkPublishedManifestUpdates(urlOrId, silent = false)
         }
     }
 
-    // Admin Shared Catalog Operations (Local + Admin's own Google Drive Shared Catalog)
+    private suspend fun checkPublishedManifestUpdates(urlOrId: String, silent: Boolean) {
+        if (!LocalFileStorage.isOnline(appContext)) {
+            if (!silent) _toastEvents.tryEmit("इंटरनेट कनेक्शन जांचें।")
+            return
+        }
+        driveManager.downloadPublicDriveUrl(urlOrId).onSuccess { bytes ->
+            val raw = String(bytes, Charsets.UTF_8)
+            runCatching {
+                adminCatalogStore.importPublishedCatalogJson(raw)
+            }.onSuccess { diff ->
+                prefs.setSharedCatalogUrl(urlOrId)
+                _publishedCatalogLink.value = urlOrId
+                val lastSeen = prefs.settingsFlow.first().lastSeenCatalogVersion
+                if (diff.manifestVersion > lastSeen) {
+                    prefs.setLastSeenCatalogVersion(diff.manifestVersion)
+                }
+                if (diff.newPublishedNotes.isNotEmpty()) {
+                    val sampleTitle = diff.newPublishedNotes.first().title
+                    _toastEvents.tryEmit("${diff.newPublishedNotes.size} नए Admin टेस्ट/नोट्स उपलब्ध: $sampleTitle")
+                } else if (!silent) {
+                    _toastEvents.tryEmit("Admin Catalog अपडेट हो गया!")
+                }
+            }.onFailure { err ->
+                if (!silent) _toastEvents.tryEmit("Invalid catalog JSON: ${err.message}")
+            }
+        }.onFailure { err ->
+            if (!silent) _toastEvents.tryEmit(err.message ?: "Failed to download Admin Catalog")
+        }
+    }
+
+    private fun resolveAdminDriveFolderForType(noteType: NoteType): String = when (noteType) {
+        NoteType.HTML -> GoogleDriveBackupManager.SUBFOLDER_PUBLISHED_TESTS
+        NoteType.PDF -> GoogleDriveBackupManager.SUBFOLDER_PDF_NOTES
+        NoteType.IMAGE, NoteType.FOLDER -> GoogleDriveBackupManager.SUBFOLDER_STUDY_MATERIAL
+    }
+
+    // Admin Shared Catalog Operations (Local + Admin's own Google Drive Shared Catalog under LEARN TALENT/ADMIN/)
+    fun adminSetAllowStudentUploads(allowed: Boolean) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            adminCatalogStore.setAllowStudentPersonalUploads(allowed)
+            _toastEvents.tryEmit(if (allowed) "Student Personal Uploads Enabled" else "Student Personal Uploads Disabled")
+            autoRefreshAdminManifestIfPossible()
+        }
+    }
+
+    fun adminCreateSharedSubject(nameEn: String, nameHi: String?, iconKey: String, colorHex: String, sortOrder: Long) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            adminCatalogStore.upsertSharedSubject(nameEn, nameHi, iconKey, colorHex, sortOrder)
+            _toastEvents.tryEmit("Shared Subject '$nameEn' created!")
+            autoRefreshAdminManifestIfPossible()
+        }
+    }
+
+    fun adminDeleteSharedSubject(subjectId: String) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            adminCatalogStore.deleteSharedSubject(subjectId)
+            _toastEvents.tryEmit("Shared Subject removed")
+            autoRefreshAdminManifestIfPossible()
+        }
+    }
+
+    fun adminCreateSharedFullLengthExam(name: String, subtitle: String?) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            adminCatalogStore.upsertSharedFullLengthExam(name, subtitle)
+            _toastEvents.tryEmit("Shared Full Length Exam '$name' created!")
+            autoRefreshAdminManifestIfPossible()
+        }
+    }
+
     fun adminUploadSharedContent(
         subjectId: String,
         topicId: String,
@@ -1215,76 +1398,157 @@ class MainViewModel(
     ) {
         if (!isAdminUser) return
         viewModelScope.launch {
-            val docId = existingNote?.id?.takeIf { it.isNotBlank() } ?: "shared_doc_${StudyDateUtils.newValidId()}"
-            val ext = when (noteType) {
-                NoteType.PDF -> "pdf"; NoteType.HTML -> "html"; NoteType.IMAGE -> "jpg"; NoteType.FOLDER -> "txt"
+            val uploaded = uploadSingleAdminFileInternal(subjectId, topicId, subtopicId, folderName, title, noteType, isMockTest, fileUri, published, existingNote)
+            if (uploaded) {
+                autoRefreshAdminManifestIfPossible()
             }
-            var downloadUrl = existingNote?.downloadUrl
-            var localFileName = existingNote?.localFileName
-            var htmlText = existingNote?.htmlContent
-            var fileSize = existingNote?.fileSizeBytes ?: 0L
+            _adminUploadProgress.value = null
+        }
+    }
 
-            if (fileUri != null) {
-                _adminUploadProgress.value = 0.1f
-                try {
-                    val (displayName, mimeType, bytes) = fileStorage.readUriBytesWithMeta(fileUri, ext)
-                    localFileName = "${docId}_$displayName"
-                    fileSize = bytes.size.toLong()
-                    File(fileStorage.sharedCacheDir(), localFileName).writeBytes(bytes)
-                    if (noteType == NoteType.HTML && bytes.size <= 190_000) {
-                        htmlText = String(bytes, Charsets.UTF_8)
-                    }
-                    _adminUploadProgress.value = 0.45f
-                    val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
-                    if (!token.isNullOrBlank() && LocalFileStorage.isOnline(appContext)) {
-                        driveManager.publishSharedFilePublicReadOnly(
-                            accessToken = token,
-                            fileName = localFileName,
-                            mimeType = mimeType,
-                            bytes = bytes,
-                        ).onSuccess { url ->
-                            downloadUrl = url
-                            fileStorage.saveSharedDownloadRecord(
-                                SharedDownloadRecord(docId, (existingNote?.version ?: 0L) + 1L, localFileName, fileSize, System.currentTimeMillis())
-                            )
-                            _sharedDownloadsMap.value = fileStorage.loadSharedDownloadsMap()
-                        }
-                    }
-                    _adminUploadProgress.value = 0.9f
-                } catch (e: CancellationException) { throw e }
-                catch (e: Exception) {
-                    _adminUploadProgress.value = null
-                    _toastEvents.tryEmit(e.message ?: "Could not read file")
-                    return@launch
+    fun adminBatchUploadSharedContent(
+        subjectId: String,
+        topicId: String,
+        subtopicId: String,
+        folderName: String,
+        noteType: NoteType,
+        isMockTest: Boolean,
+        uris: List<Uri>,
+        published: Boolean,
+    ) {
+        if (!isAdminUser || uris.isEmpty()) return
+        viewModelScope.launch {
+            var successCount = 0
+            uris.forEachIndexed { idx, uri ->
+                _adminUploadProgress.value = (idx + 0.5f) / uris.size.toFloat()
+                val title = fileStorage.queryDisplayName(uri)?.substringBeforeLast(".") ?: "Material ${idx + 1}"
+                if (uploadSingleAdminFileInternal(subjectId, topicId, subtopicId, folderName, title, noteType, isMockTest, uri, published, null)) {
+                    successCount++
                 }
             }
-
-            val nextVersion = if (existingNote != null) existingNote.version + 1L else 1L
-            val noteObj = StudyNote(
-                id = docId,
-                subjectId = subjectId,
-                topicId = topicId,
-                subtopicId = subtopicId,
-                folderName = folderName,
-                title = title,
-                noteType = noteType.name,
-                localFileName = localFileName,
-                htmlContent = htmlText,
-                isShared = true,
-                storagePath = "Shared Catalog/$localFileName",
-                downloadUrl = downloadUrl,
-                version = nextVersion,
-                published = published,
-                downloadsCount = existingNote?.downloadsCount ?: 0L,
-                fileSizeBytes = fileSize,
-                isMockTest = isMockTest,
-            )
-            adminCatalogStore.upsertSharedContent(noteObj)
-            _toastEvents.tryEmit(
-                if (!downloadUrl.isNullOrBlank()) "Uploaded to Admin Drive & Shared Catalog (v$nextVersion)!"
-                else "Saved to Shared Catalog (v$nextVersion). Tap 'Publish Catalog to Drive' when online!"
-            )
             _adminUploadProgress.value = null
+            _toastEvents.tryEmit("Batch Upload Complete: $successCount / ${uris.size} files added!")
+            if (successCount > 0) autoRefreshAdminManifestIfPossible()
+        }
+    }
+
+    private suspend fun uploadSingleAdminFileInternal(
+        subjectId: String,
+        topicId: String,
+        subtopicId: String,
+        folderName: String,
+        title: String,
+        noteType: NoteType,
+        isMockTest: Boolean,
+        fileUri: Uri?,
+        published: Boolean,
+        existingNote: StudyNote?,
+    ): Boolean {
+        val docId = existingNote?.id?.takeIf { it.isNotBlank() } ?: "shared_doc_${StudyDateUtils.newValidId()}"
+        val ext = when (noteType) {
+            NoteType.PDF -> "pdf"; NoteType.HTML -> "html"; NoteType.IMAGE -> "jpg"; NoteType.FOLDER -> "txt"
+        }
+        val targetFolder = resolveAdminDriveFolderForType(noteType)
+        var downloadUrl = existingNote?.downloadUrl
+        var localFileName = existingNote?.localFileName
+        var htmlText = existingNote?.htmlContent
+        var fileSize = existingNote?.fileSizeBytes ?: 0L
+
+        if (fileUri != null) {
+            _adminUploadProgress.value = 0.1f
+            try {
+                val (displayName, mimeType, bytes) = fileStorage.readUriBytesWithMeta(fileUri, ext)
+                localFileName = "${docId}_$displayName"
+                fileSize = bytes.size.toLong()
+                File(fileStorage.sharedCacheDir(), localFileName).writeBytes(bytes)
+                if (noteType == NoteType.HTML && bytes.size <= 190_000) {
+                    htmlText = String(bytes, Charsets.UTF_8)
+                }
+                _adminUploadProgress.value = 0.45f
+                val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
+                if (!token.isNullOrBlank() && LocalFileStorage.isOnline(appContext)) {
+                    driveManager.publishSharedFilePublicReadOnly(
+                        accessToken = token,
+                        targetAdminSubfolder = targetFolder,
+                        fileName = localFileName,
+                        mimeType = mimeType,
+                        bytes = bytes,
+                    ).onSuccess { url ->
+                        downloadUrl = url
+                        fileStorage.saveSharedDownloadRecord(
+                            SharedDownloadRecord(docId, (existingNote?.version ?: 0L) + 1L, localFileName, fileSize, System.currentTimeMillis())
+                        )
+                        _sharedDownloadsMap.value = fileStorage.loadSharedDownloadsMap()
+                    }
+                }
+                _adminUploadProgress.value = 0.9f
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                _toastEvents.tryEmit(e.message ?: "Could not read file")
+                return false
+            }
+        }
+
+        val nextVersion = if (existingNote != null) existingNote.version + 1L else 1L
+        val noteObj = StudyNote(
+            id = docId,
+            subjectId = subjectId,
+            topicId = topicId,
+            subtopicId = subtopicId,
+            folderName = folderName,
+            title = title,
+            noteType = noteType.name,
+            localFileName = localFileName,
+            htmlContent = htmlText,
+            isShared = true,
+            storagePath = "ADMIN/$targetFolder/$localFileName",
+            downloadUrl = downloadUrl,
+            version = nextVersion,
+            published = published,
+            downloadsCount = existingNote?.downloadsCount ?: 0L,
+            fileSizeBytes = fileSize,
+            isMockTest = isMockTest,
+        )
+        adminCatalogStore.upsertSharedContent(noteObj)
+        _toastEvents.tryEmit(
+            if (!downloadUrl.isNullOrBlank()) "Uploaded to ADMIN/$targetFolder & Catalog (v$nextVersion)!"
+            else "Saved to Catalog (v$nextVersion). Tap 'Publish to Drive' to sync manifest!"
+        )
+        return true
+    }
+
+    fun adminEditSharedContent(note: StudyNote, newTitle: String, newFolderName: String, isMockTest: Boolean, published: Boolean) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            adminCatalogStore.editSharedContent(note.id, newTitle, newFolderName, isMockTest, published)
+            _toastEvents.tryEmit("Updated '${newTitle.trim()}'")
+            autoRefreshAdminManifestIfPossible()
+        }
+    }
+
+    fun adminApproveSubmission(submissionId: String) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            val approved = adminCatalogStore.approveStudentSubmission(submissionId)
+            if (approved != null) {
+                _toastEvents.tryEmit("Approved & published '${approved.title}' for all students!")
+                autoRefreshAdminManifestIfPossible()
+            }
+        }
+    }
+
+    fun adminRejectSubmission(submissionId: String) {
+        if (!isAdminUser) return
+        viewModelScope.launch {
+            adminCatalogStore.rejectStudentSubmission(submissionId)
+            _toastEvents.tryEmit("Submission declined")
+        }
+    }
+
+    private suspend fun autoRefreshAdminManifestIfPossible() {
+        val token = cachedDriveToken ?: driveManager.silentGetDriveToken(appContext)
+        if (!token.isNullOrBlank() && LocalFileStorage.isOnline(appContext)) {
+            publishAdminCatalogWithToken(token)
         }
     }
 
@@ -1302,11 +1566,17 @@ class MainViewModel(
         driveManager.publishSharedCatalogJsonToDrive(token, catalogJson).onSuccess { url ->
             prefs.setSharedCatalogUrl(url)
             _publishedCatalogLink.value = url
-            _driveSyncState.value = DriveSyncUiState.Synced(System.currentTimeMillis(), "Shared Catalog Published")
-            _toastEvents.tryEmit("Shared Catalog Drive पर पब्लिश हो गया! लिंक कॉपी के लिए तैयार है।")
+            _driveSyncState.value = DriveSyncUiState.Synced(System.currentTimeMillis(), "Admin Manifest Published")
+            _toastEvents.tryEmit("Shared Catalog ADMIN Drive पर पब्लिश हो गया! लिंक कॉपी करें।")
         }.onFailure { err ->
-            _driveSyncState.value = DriveSyncUiState.Error(err.message ?: "Publish failed")
-            _toastEvents.tryEmit(err.message ?: "Publish failed")
+            val msg = err.message ?: "Publish failed"
+            if (GoogleDriveBackupManager.isAuthRevokedError(msg)) {
+                cachedDriveToken = null
+                _driveSyncState.value = DriveSyncUiState.NeedAuth("Google Drive अनुमति पुनः दें")
+            } else {
+                _driveSyncState.value = DriveSyncUiState.Error(msg)
+            }
+            _toastEvents.tryEmit(msg)
         }
     }
 
@@ -1315,6 +1585,7 @@ class MainViewModel(
         viewModelScope.launch {
             adminCatalogStore.toggleSharedContentPublished(note.id, !note.published)
             _toastEvents.tryEmit(if (!note.published) "Published" else "Unpublished (Draft)")
+            autoRefreshAdminManifestIfPossible()
         }
     }
 
@@ -1323,6 +1594,7 @@ class MainViewModel(
         viewModelScope.launch {
             adminCatalogStore.deleteSharedContent(note.id)
             _toastEvents.tryEmit("Deleted shared item '${note.title}'")
+            autoRefreshAdminManifestIfPossible()
         }
     }
 
@@ -1331,12 +1603,16 @@ class MainViewModel(
         viewModelScope.launch {
             adminCatalogStore.upsertSharedTopic(subjectId, name, description)
             _toastEvents.tryEmit("Shared Topic created!")
+            autoRefreshAdminManifestIfPossible()
         }
     }
 
     fun adminDeleteSharedTopic(topicId: String) {
         if (!isAdminUser) return
-        viewModelScope.launch { adminCatalogStore.deleteSharedTopic(topicId) }
+        viewModelScope.launch {
+            adminCatalogStore.deleteSharedTopic(topicId)
+            autoRefreshAdminManifestIfPossible()
+        }
     }
 
     fun adminUpsertSharedSubtopic(subjectId: String, topicId: String, name: String) {
@@ -1344,12 +1620,16 @@ class MainViewModel(
         viewModelScope.launch {
             adminCatalogStore.upsertSharedSubtopic(subjectId, topicId, name)
             _toastEvents.tryEmit("Shared Sub-topic created!")
+            autoRefreshAdminManifestIfPossible()
         }
     }
 
     fun adminDeleteSharedSubtopic(subtopicId: String) {
         if (!isAdminUser) return
-        viewModelScope.launch { adminCatalogStore.deleteSharedSubtopic(subtopicId) }
+        viewModelScope.launch {
+            adminCatalogStore.deleteSharedSubtopic(subtopicId)
+            autoRefreshAdminManifestIfPossible()
+        }
     }
 
     fun adminUpdateWhatsAppRequestStatus(requestId: String, status: String) {

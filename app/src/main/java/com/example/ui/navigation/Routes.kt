@@ -6,6 +6,15 @@ import kotlinx.serialization.Serializable
 data object SubjectsHomeRoute
 
 @Serializable
+data object TestsHubRoute
+
+@Serializable
+data object StudyHubRoute
+
+@Serializable
+data object ResultsAnalyticsRoute
+
+@Serializable
 data class TopicsRoute(val subjectId: String)
 
 @Serializable
@@ -69,4 +78,3 @@ data object FullLengthExamsRoute
 
 @Serializable
 data class FullLengthExamTestsRoute(val examId: String)
-

@@ -192,6 +192,14 @@ data class OfflinePdfAnnotationDto(
 )
 
 @Serializable
+data class PendingSyncOperation(
+    val opId: String,
+    val entityType: String,
+    val entityId: String,
+    val createdAtMillis: Long = System.currentTimeMillis(),
+)
+
+@Serializable
 data class OfflineVaultSnapshot(
     val profile: OfflineUserProfileDto = OfflineUserProfileDto(),
     val subjects: List<OfflineSubjectDto> = emptyList(),
@@ -207,6 +215,7 @@ data class OfflineVaultSnapshot(
     val personalNotes: List<OfflinePersonalNoteDto> = emptyList(),
     val bookmarks: List<OfflineBookmarkDto> = emptyList(),
     val pdfAnnotations: List<OfflinePdfAnnotationDto> = emptyList(),
+    val pendingSyncQueue: List<PendingSyncOperation> = emptyList(),
     val hasUserEdits: Boolean = false,
 )
 

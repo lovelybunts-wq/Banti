@@ -4,11 +4,18 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import com.example.data.local.DriveStructuredFilesPayload
+import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
@@ -27,7 +34,13 @@ import java.util.concurrent.TimeUnit
 sealed class DriveAuthOutcome {
     data class Authorized(val accessToken: String) : DriveAuthOutcome()
     data class NeedsResolution(val intentSender: android.content.IntentSender) : DriveAuthOutcome()
-    data class Error(val message: String) : DriveAuthOutcome()
+    data class Error(val message: String, val statusCode: Int? = null) : DriveAuthOutcome()
+}
+
+sealed class IntentTokenResolution {
+    data class Token(val accessToken: String) : IntentTokenResolution()
+    data object UserCancelled : IntentTokenResolution()
+    data class Failed(val statusCode: Int?, val message: String) : IntentTokenResolution()
 }
 
 data class GoogleDriveProfile(
@@ -35,6 +48,7 @@ data class GoogleDriveProfile(
     val email: String,
     val name: String,
     val photoUrl: String? = null,
+    val emailVerified: Boolean = true,
 )
 
 data class DriveBackupSummary(
@@ -47,6 +61,7 @@ data class DriveRestoredPayload(
     val restoredBinaryFiles: Map<String, ByteArray>,
 )
 
+@Suppress("DEPRECATION")
 class GoogleDriveBackupManager {
 
     private val client = OkHttpClient.Builder()
@@ -67,7 +82,7 @@ class GoogleDriveBackupManager {
         requestAuthorizationInternal(activity, listOf(driveScope, emailScope, profileScope))
 
     suspend fun silentGetDriveToken(context: Context): String? {
-        return try {
+        val identityToken = try {
             val request = AuthorizationRequest.builder()
                 .setRequestedScopes(listOf(driveScope, emailScope, profileScope))
                 .build()
@@ -78,6 +93,13 @@ class GoogleDriveBackupManager {
         } catch (_: Exception) {
             null
         }
+        if (!identityToken.isNullOrBlank()) return identityToken
+
+        val lastAcct = runCatching { GoogleSignIn.getLastSignedInAccount(context) }.getOrNull()
+        if (lastAcct != null) {
+            return tryMintDriveTokenForAccount(context, lastAcct)
+        }
+        return null
     }
 
     private suspend fun requestAuthorizationInternal(
@@ -99,6 +121,8 @@ class GoogleDriveBackupManager {
             } else {
                 DriveAuthOutcome.Error("Google Drive access token unavailable. Please select a Google account.")
             }
+        } catch (e: ApiException) {
+            DriveAuthOutcome.Error(e.message ?: "Google authorization failed (${e.statusCode}).", e.statusCode)
         } catch (e: Exception) {
             DriveAuthOutcome.Error(e.message ?: "Google authorization failed on this device.")
         }
@@ -119,10 +143,19 @@ class GoogleDriveBackupManager {
                     }
                     val json = JSONObject(txt)
                     val email = json.optString("email", "").trim()
+                    val emailVerified = json.optBoolean("email_verified", false)
                     val sub = json.optString("sub", "").ifBlank { email }.ifBlank { "google_user" }
                     val name = json.optString("name", "").ifBlank { email.substringBefore("@") }.ifBlank { "Google User" }
                     val picture = json.optString("picture", "").trim().takeIf { it.isNotBlank() }
-                    Result.success(GoogleDriveProfile(id = "drive_${sub.take(32)}", email = email, name = name, photoUrl = picture))
+                    Result.success(
+                        GoogleDriveProfile(
+                            id = "drive_${sub.take(40)}",
+                            email = email,
+                            name = name,
+                            photoUrl = picture,
+                            emailVerified = emailVerified,
+                        )
+                    )
                 }
             } catch (e: Exception) {
                 Result.failure(e)
@@ -132,9 +165,90 @@ class GoogleDriveBackupManager {
     fun extractTokenFromIntent(activity: Activity, data: Intent?): String? {
         return try {
             val result = Identity.getAuthorizationClient(activity).getAuthorizationResultFromIntent(data)
-            result.accessToken
+            result.accessToken?.takeIf { it.isNotBlank() }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    suspend fun resolveTokenFromActivityResult(
+        activity: Activity,
+        resultCode: Int,
+        data: Intent?,
+    ): IntentTokenResolution {
+        if (data != null) {
+            val intentAuth = runCatching {
+                Identity.getAuthorizationClient(activity).getAuthorizationResultFromIntent(data)
+            }
+            val directToken = intentAuth.getOrNull()?.accessToken?.takeIf { it.isNotBlank() }
+            if (directToken != null) {
+                return IntentTokenResolution.Token(directToken)
+            }
+            val ex = intentAuth.exceptionOrNull()
+            if (ex is ApiException) {
+                if (ex.statusCode == CommonStatusCodes.CANCELED || resultCode == Activity.RESULT_CANCELED) {
+                    return IntentTokenResolution.UserCancelled
+                }
+                // Even if an ApiException occurred on intent extraction, try silent fetch if RESULT_OK
+                if (resultCode != Activity.RESULT_OK) {
+                    return IntentTokenResolution.Failed(ex.statusCode, ex.message ?: "Authorization error (${ex.statusCode})")
+                }
+            }
+        }
+
+        if (resultCode == Activity.RESULT_CANCELED) {
+            return IntentTokenResolution.UserCancelled
+        }
+
+        // Play Services AuthorizationClient on some Android OEMs returns RESULT_OK without embedding accessToken
+        // inside the result Intent; querying authorize() silently right after consent mints the token.
+        repeat(2) { attempt ->
+            delay(if (attempt == 0) 200L else 450L)
+            val silentToken = silentGetDriveToken(activity)
+            if (!silentToken.isNullOrBlank()) {
+                return IntentTokenResolution.Token(silentToken)
+            }
+        }
+
+        return IntentTokenResolution.Failed(
+            statusCode = null,
+            message = "Drive token was not embedded in consent result."
+        )
+    }
+
+    fun buildFallbackGoogleSignInIntent(context: Context): Intent {
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail()
+            .requestProfile()
+            .build()
+        return GoogleSignIn.getClient(context, gso).signInIntent
+    }
+
+    fun extractFallbackAccountFromIntent(data: Intent?): Result<GoogleSignInAccount> {
+        return try {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(data)
+            val account = task.getResult(ApiException::class.java)
+            Result.success(account)
+        } catch (e: ApiException) {
+            Result.failure(e)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun tryMintDriveTokenForAccount(context: Context, account: GoogleSignInAccount): String? =
+        withContext(Dispatchers.IO) {
+            val androidAccount = account.account ?: return@withContext null
+            runCatching {
+                val scopeStr = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+                GoogleAuthUtil.getToken(context, androidAccount, scopeStr).takeIf { it.isNotBlank() }
+            }.getOrNull()
+        }
+
+    suspend fun signOutFallbackClient(context: Context) {
+        runCatching {
+            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+            GoogleSignIn.getClient(context, gso).signOut().awaitGmsTask()
         }
     }
 
@@ -145,42 +259,41 @@ class GoogleDriveBackupManager {
     ): Result<DriveBackupSummary> = withContext(Dispatchers.IO) {
         try {
             val rootId = findOrCreateFolder(accessToken, ROOT_FOLDER_NAME, parentId = null)
+            val studentsRootId = findOrCreateFolder(accessToken, STUDENTS_ROOT_FOLDER, parentId = rootId)
             var count = 0
 
-            // 1. Full restore snapshot inside LEARN TALENT/learn_talent_backup.json
-            uploadOrUpdateFile(
-                accessToken = accessToken,
-                folderId = rootId,
-                fileName = BACKUP_JSON_NAME,
-                mimeType = "application/json",
-                bytes = payload.fullBackupJson.toByteArray(Charsets.UTF_8)
-            )
+            // 1. LEARN TALENT/STUDENTS/STUDENT DATA/
+            val studentDataFolderId = findOrCreateFolder(accessToken, SUBFOLDER_STUDENT_DATA, studentsRootId)
+            uploadOrUpdateFile(accessToken, studentDataFolderId, BACKUP_JSON_NAME, "application/json", payload.fullBackupJson.toByteArray(Charsets.UTF_8))
+            count++
+            uploadOrUpdateFile(accessToken, studentDataFolderId, FILE_STUDENT_PROFILE, "application/json", payload.studentProfileJson.toByteArray(Charsets.UTF_8))
+            count++
+            uploadOrUpdateFile(accessToken, studentDataFolderId, FILE_NOTES_INDEX, "application/json", payload.notesIndexJson.toByteArray(Charsets.UTF_8))
+            count++
+            uploadOrUpdateFile(accessToken, studentDataFolderId, FILE_BOOKMARKS, "application/json", payload.bookmarksJson.toByteArray(Charsets.UTF_8))
             count++
 
-            // 2. Organized Subfolders inside LEARN TALENT/
-            val profileFolderId = findOrCreateFolder(accessToken, SUBFOLDER_PROFILE, rootId)
-            uploadOrUpdateFile(accessToken, profileFolderId, FILE_STUDENT_PROFILE, "application/json", payload.studentProfileJson.toByteArray(Charsets.UTF_8))
+            // 2. LEARN TALENT/STUDENTS/TEST RESULTS/
+            val testResultsFolderId = findOrCreateFolder(accessToken, SUBFOLDER_TEST_RESULTS, studentsRootId)
+            uploadOrUpdateFile(accessToken, testResultsFolderId, FILE_TEST_HISTORY, "application/json", payload.testHistoryJson.toByteArray(Charsets.UTF_8))
+            count++
+            uploadOrUpdateFile(accessToken, testResultsFolderId, FILE_EXAM_RESULTS, "application/json", payload.examResultsJson.toByteArray(Charsets.UTF_8))
             count++
 
-            val examResultsFolderId = findOrCreateFolder(accessToken, SUBFOLDER_EXAM_RESULTS, rootId)
-            uploadOrUpdateFile(accessToken, examResultsFolderId, FILE_EXAM_RESULTS, "application/json", payload.examResultsJson.toByteArray(Charsets.UTF_8))
+            // 3. LEARN TALENT/STUDENTS/PROGRESS REPORTS/
+            val progressFolderId = findOrCreateFolder(accessToken, SUBFOLDER_PROGRESS_REPORTS, studentsRootId)
+            uploadOrUpdateFile(accessToken, progressFolderId, FILE_PROGRESS_REPORT, "application/json", payload.progressReportJson.toByteArray(Charsets.UTF_8))
             count++
 
-            val testHistoryFolderId = findOrCreateFolder(accessToken, SUBFOLDER_TEST_HISTORY, rootId)
-            uploadOrUpdateFile(accessToken, testHistoryFolderId, FILE_TEST_HISTORY, "application/json", payload.testHistoryJson.toByteArray(Charsets.UTF_8))
-            count++
-
-            val notesFolderId = findOrCreateFolder(accessToken, SUBFOLDER_NOTES, rootId)
-            uploadOrUpdateFile(accessToken, notesFolderId, FILE_NOTES_INDEX, "application/json", payload.notesIndexJson.toByteArray(Charsets.UTF_8))
-            count++
-
+            // 4. LEARN TALENT/STUDENTS/PERSONAL UPLOADS/
+            val personalUploadsFolderId = findOrCreateFolder(accessToken, SUBFOLDER_PERSONAL_UPLOADS, studentsRootId)
             for (file in attachedFiles) {
                 if (file.exists() && file.length() > 0L && file.length() <= 20L * 1024L * 1024L) {
-                    val alreadyInNotes = findFileIdInFolder(accessToken, notesFolderId, file.name) != null
-                    if (!alreadyInNotes) {
+                    val alreadyUploaded = findFileIdInFolder(accessToken, personalUploadsFolderId, file.name) != null
+                    if (!alreadyUploaded) {
                         uploadOrUpdateFile(
                             accessToken = accessToken,
-                            folderId = notesFolderId,
+                            folderId = personalUploadsFolderId,
                             fileName = file.name,
                             mimeType = guessMime(file.name),
                             bytes = file.readBytes()
@@ -189,14 +302,6 @@ class GoogleDriveBackupManager {
                     }
                 }
             }
-
-            val bookmarksFolderId = findOrCreateFolder(accessToken, SUBFOLDER_BOOKMARKS, rootId)
-            uploadOrUpdateFile(accessToken, bookmarksFolderId, FILE_BOOKMARKS, "application/json", payload.bookmarksJson.toByteArray(Charsets.UTF_8))
-            count++
-
-            val progressFolderId = findOrCreateFolder(accessToken, SUBFOLDER_PROGRESS_REPORTS, rootId)
-            uploadOrUpdateFile(accessToken, progressFolderId, FILE_PROGRESS_REPORT, "application/json", payload.progressReportJson.toByteArray(Charsets.UTF_8))
-            count++
 
             Result.success(DriveBackupSummary(folderId = rootId, uploadedFilesCount = count))
         } catch (e: Exception) {
@@ -207,6 +312,13 @@ class GoogleDriveBackupManager {
     suspend fun hasBackupInLearnTalentFolder(accessToken: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val rootId = findRootLearnTalentFolderId(accessToken) ?: return@withContext false
+            val studentsRootId = findFolderId(accessToken, STUDENTS_ROOT_FOLDER, parentId = rootId)
+            val studentDataFolderId = if (studentsRootId != null) {
+                findFolderId(accessToken, SUBFOLDER_STUDENT_DATA, parentId = studentsRootId)
+            } else null
+            if (studentDataFolderId != null && findFileIdInFolder(accessToken, studentDataFolderId, BACKUP_JSON_NAME) != null) {
+                return@withContext true
+            }
             findFileIdInFolder(accessToken, rootId, BACKUP_JSON_NAME) != null
         } catch (_: Exception) {
             false
@@ -219,29 +331,51 @@ class GoogleDriveBackupManager {
                 val rootId = findRootLearnTalentFolderId(accessToken)
                     ?: throw IllegalStateException("Google Drive पर '$ROOT_FOLDER_NAME' फोल्डर नहीं मिला।")
 
-                val rootFiles = listFilesInFolder(accessToken, rootId)
                 var jsonString: String? = null
                 val binaryFiles = mutableMapOf<String, ByteArray>()
 
-                for ((id, name, mime) in rootFiles) {
-                    if (mime == FOLDER_MIME) continue
-                    val bytes = downloadFileBytes(accessToken, id)
-                    if (name == BACKUP_JSON_NAME) {
-                        jsonString = String(bytes, Charsets.UTF_8)
-                    } else {
-                        binaryFiles[name] = bytes
+                // Check new LEARN TALENT/STUDENTS/ structure first
+                val studentsRootId = findFolderId(accessToken, STUDENTS_ROOT_FOLDER, parentId = rootId)
+                if (studentsRootId != null) {
+                    val studentDataFolderId = findFolderId(accessToken, SUBFOLDER_STUDENT_DATA, parentId = studentsRootId)
+                    if (studentDataFolderId != null) {
+                        val backupId = findFileIdInFolder(accessToken, studentDataFolderId, BACKUP_JSON_NAME)
+                        if (backupId != null) {
+                            jsonString = String(downloadFileBytes(accessToken, backupId), Charsets.UTF_8)
+                        }
+                    }
+                    val personalUploadsFolderId = findFolderId(accessToken, SUBFOLDER_PERSONAL_UPLOADS, parentId = studentsRootId)
+                    if (personalUploadsFolderId != null) {
+                        val files = listFilesInFolder(accessToken, personalUploadsFolderId)
+                        for ((id, name, mime) in files) {
+                            if (mime == FOLDER_MIME) continue
+                            runCatching { downloadFileBytes(accessToken, id) }
+                                .onSuccess { bytes -> binaryFiles[name] = bytes }
+                        }
                     }
                 }
 
-                // Also download attached PDF/HTML/Image files stored inside LEARN TALENT/Notes
-                val notesFolderId = findFolderId(accessToken, SUBFOLDER_NOTES, parentId = rootId)
-                if (notesFolderId != null) {
-                    val notesFiles = listFilesInFolder(accessToken, notesFolderId)
-                    for ((id, name, mime) in notesFiles) {
-                        if (mime == FOLDER_MIME || name == FILE_NOTES_INDEX) continue
-                        if (!binaryFiles.containsKey(name)) {
-                            runCatching { downloadFileBytes(accessToken, id) }
-                                .onSuccess { bytes -> binaryFiles[name] = bytes }
+                // Backward-compatibility fallback: root BACKUP_JSON_NAME and legacy Notes/ subfolder
+                if (jsonString == null) {
+                    val rootFiles = listFilesInFolder(accessToken, rootId)
+                    for ((id, name, mime) in rootFiles) {
+                        if (mime == FOLDER_MIME) continue
+                        val bytes = downloadFileBytes(accessToken, id)
+                        if (name == BACKUP_JSON_NAME) {
+                            jsonString = String(bytes, Charsets.UTF_8)
+                        } else if (!binaryFiles.containsKey(name)) {
+                            binaryFiles[name] = bytes
+                        }
+                    }
+                    val legacyNotesFolderId = findFolderId(accessToken, LEGACY_SUBFOLDER_NOTES, parentId = rootId)
+                    if (legacyNotesFolderId != null) {
+                        val notesFiles = listFilesInFolder(accessToken, legacyNotesFolderId)
+                        for ((id, name, mime) in notesFiles) {
+                            if (mime == FOLDER_MIME || name == FILE_NOTES_INDEX) continue
+                            if (!binaryFiles.containsKey(name)) {
+                                runCatching { downloadFileBytes(accessToken, id) }
+                                    .onSuccess { bytes -> binaryFiles[name] = bytes }
+                            }
                         }
                     }
                 }
@@ -257,14 +391,16 @@ class GoogleDriveBackupManager {
 
     suspend fun publishSharedFilePublicReadOnly(
         accessToken: String,
+        targetAdminSubfolder: String,
         fileName: String,
         mimeType: String,
         bytes: ByteArray,
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             val rootId = findOrCreateFolder(accessToken, ROOT_FOLDER_NAME, parentId = null)
-            val catalogFolderId = findOrCreateFolder(accessToken, SUBFOLDER_SHARED_CATALOG, parentId = rootId)
-            val fileId = uploadOrUpdateFile(accessToken, catalogFolderId, fileName, mimeType, bytes)
+            val adminRootId = findOrCreateFolder(accessToken, ADMIN_ROOT_FOLDER, parentId = rootId)
+            val targetFolderId = findOrCreateFolder(accessToken, targetAdminSubfolder, parentId = adminRootId)
+            val fileId = uploadOrUpdateFile(accessToken, targetFolderId, fileName, mimeType, bytes)
             makeFileAnyoneReadable(accessToken, fileId)
             Result.success("https://drive.google.com/uc?export=download&id=$fileId")
         } catch (e: Exception) {
@@ -275,12 +411,30 @@ class GoogleDriveBackupManager {
     suspend fun publishSharedCatalogJsonToDrive(
         accessToken: String,
         catalogJson: String,
-    ): Result<String> = publishSharedFilePublicReadOnly(
-        accessToken = accessToken,
-        fileName = FILE_SHARED_CATALOG,
-        mimeType = "application/json",
-        bytes = catalogJson.toByteArray(Charsets.UTF_8),
-    )
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val bytes = catalogJson.toByteArray(Charsets.UTF_8)
+            val rootId = findOrCreateFolder(accessToken, ROOT_FOLDER_NAME, parentId = null)
+            val adminRootId = findOrCreateFolder(accessToken, ADMIN_ROOT_FOLDER, parentId = rootId)
+
+            // Ensure all 4 ADMIN subfolders exist cleanly
+            val publishedTestsFolderId = findOrCreateFolder(accessToken, SUBFOLDER_PUBLISHED_TESTS, parentId = adminRootId)
+            findOrCreateFolder(accessToken, SUBFOLDER_PDF_NOTES, parentId = adminRootId)
+            findOrCreateFolder(accessToken, SUBFOLDER_STUDY_MATERIAL, parentId = adminRootId)
+            val subjectsFolderId = findOrCreateFolder(accessToken, SUBFOLDER_SUBJECTS, parentId = adminRootId)
+
+            // Write manifest inside ADMIN/PUBLISHED TESTS/ and mirror in ADMIN/SUBJECTS/
+            val manifestId = uploadOrUpdateFile(accessToken, publishedTestsFolderId, FILE_SHARED_CATALOG, "application/json", bytes)
+            makeFileAnyoneReadable(accessToken, manifestId)
+
+            val subjectsCatalogId = uploadOrUpdateFile(accessToken, subjectsFolderId, FILE_SHARED_CATALOG, "application/json", bytes)
+            makeFileAnyoneReadable(accessToken, subjectsCatalogId)
+
+            Result.success("https://drive.google.com/uc?export=download&id=$manifestId")
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 
     suspend fun downloadPublicDriveUrl(urlOrId: String): Result<ByteArray> = withContext(Dispatchers.IO) {
         try {
@@ -479,21 +633,31 @@ class GoogleDriveBackupManager {
         const val ROOT_FOLDER_NAME = "LEARN TALENT"
         const val LEGACY_FOLDER_NAME = "Learn Talent"
 
-        const val SUBFOLDER_PROFILE = "Student Profile"
-        const val SUBFOLDER_EXAM_RESULTS = "Exam Results"
-        const val SUBFOLDER_TEST_HISTORY = "Test History"
-        const val SUBFOLDER_NOTES = "Notes"
-        const val SUBFOLDER_BOOKMARKS = "Bookmarks"
-        const val SUBFOLDER_PROGRESS_REPORTS = "Progress Reports"
-        const val SUBFOLDER_SHARED_CATALOG = "Shared Catalog"
+        const val ADMIN_ROOT_FOLDER = "ADMIN"
+        const val SUBFOLDER_PUBLISHED_TESTS = "PUBLISHED TESTS"
+        const val SUBFOLDER_PDF_NOTES = "PDF NOTES"
+        const val SUBFOLDER_STUDY_MATERIAL = "STUDY MATERIAL"
+        const val SUBFOLDER_SUBJECTS = "SUBJECTS"
+
+        val ALL_ADMIN_SUBFOLDERS = listOf(
+            SUBFOLDER_PUBLISHED_TESTS,
+            SUBFOLDER_PDF_NOTES,
+            SUBFOLDER_STUDY_MATERIAL,
+            SUBFOLDER_SUBJECTS,
+        )
+
+        const val STUDENTS_ROOT_FOLDER = "STUDENTS"
+        const val SUBFOLDER_STUDENT_DATA = "STUDENT DATA"
+        const val SUBFOLDER_TEST_RESULTS = "TEST RESULTS"
+        const val SUBFOLDER_PROGRESS_REPORTS = "PROGRESS REPORTS"
+        const val SUBFOLDER_PERSONAL_UPLOADS = "PERSONAL UPLOADS"
+        const val LEGACY_SUBFOLDER_NOTES = "Notes"
 
         val ALL_STUDENT_SUBFOLDERS = listOf(
-            SUBFOLDER_PROFILE,
-            SUBFOLDER_EXAM_RESULTS,
-            SUBFOLDER_TEST_HISTORY,
-            SUBFOLDER_NOTES,
-            SUBFOLDER_BOOKMARKS,
+            SUBFOLDER_STUDENT_DATA,
+            SUBFOLDER_TEST_RESULTS,
             SUBFOLDER_PROGRESS_REPORTS,
+            SUBFOLDER_PERSONAL_UPLOADS,
         )
 
         const val BACKUP_JSON_NAME = "learn_talent_backup.json"
@@ -504,6 +668,11 @@ class GoogleDriveBackupManager {
         const val FILE_BOOKMARKS = "bookmarks.json"
         const val FILE_PROGRESS_REPORT = "progress_report.json"
         const val FILE_SHARED_CATALOG = "shared_catalog.json"
+
+        fun isAuthRevokedError(message: String?): Boolean {
+            val m = message?.lowercase().orEmpty()
+            return "(401)" in m || "(403)" in m || "invalid_grant" in m || "unauthorized" in m
+        }
 
         fun resolvePublicDriveDownloadUrl(input: String): String? {
             val trimmed = input.trim()
