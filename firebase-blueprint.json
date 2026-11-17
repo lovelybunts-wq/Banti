@@ -1,0 +1,221 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile, exam countdown settings, and preferred dark theme.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the owner." },
+        "displayName": { "type": "string", "description": "User display name." },
+        "examName": { "type": "string", "description": "Target exam name." },
+        "examDateMillis": { "type": "integer", "description": "Target exam epoch milliseconds." },
+        "themeId": {
+          "type": "string",
+          "enum": ["midnight_teal", "forest_sage", "indigo_velvet", "warm_espresso"],
+          "description": "Selected dark theme palette."
+        },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp." }
+      },
+      "required": ["userId", "displayName", "createdAt", "updatedAt"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Study subject (e.g., History, Polity, Science).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "nameEn": { "type": "string" },
+        "nameHi": { "type": "string" },
+        "iconKey": { "type": "string" },
+        "colorHex": { "type": "string" },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "nameEn", "iconKey", "colorHex", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "Topic": {
+      "title": "Topic",
+      "description": "Topic inside a subject (e.g., Physics/Chemistry/Biology under Science).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "subjectId", "name", "createdAt", "updatedAt"]
+    },
+    "Subtopic": {
+      "title": "Subtopic",
+      "description": "Sub-topic inside a topic containing notes, videos, MCQs, and HTML tests.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "topicId": { "type": "string" },
+        "name": { "type": "string" },
+        "lastStudiedDate": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "subjectId", "topicId", "name", "createdAt", "updatedAt"]
+    },
+    "StudyNote": {
+      "title": "StudyNote",
+      "description": "User note or folder (PDF, HTML, Image, or Folder).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "topicId": { "type": "string" },
+        "subtopicId": { "type": "string" },
+        "folderName": { "type": "string" },
+        "title": { "type": "string" },
+        "noteType": { "type": "string", "enum": ["PDF", "HTML", "IMAGE", "FOLDER"] },
+        "localFileName": { "type": "string" },
+        "htmlContent": { "type": "string" },
+        "lastOpenedDate": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "subjectId", "topicId", "subtopicId", "folderName", "title", "noteType", "createdAt", "updatedAt"]
+    },
+    "VideoLink": {
+      "title": "VideoLink",
+      "description": "Saved YouTube video link for a sub-topic.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "topicId": { "type": "string" },
+        "subtopicId": { "type": "string" },
+        "title": { "type": "string" },
+        "youtubeUrl": { "type": "string" },
+        "channelOrNote": { "type": "string" },
+        "lastWatchedDate": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "subjectId", "topicId", "subtopicId", "title", "youtubeUrl", "createdAt", "updatedAt"]
+    },
+    "McqQuestion": {
+      "title": "McqQuestion",
+      "description": "Practice multiple-choice question inside a sub-topic.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "topicId": { "type": "string" },
+        "subtopicId": { "type": "string" },
+        "question": { "type": "string" },
+        "options": { "type": "array" },
+        "correctIndex": { "type": "integer" },
+        "explanation": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "subjectId", "topicId", "subtopicId", "question", "options", "correctIndex", "createdAt", "updatedAt"]
+    },
+    "TestResult": {
+      "title": "TestResult",
+      "description": "Score record from an HTML mock test or MCQ practice session.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "topicId": { "type": "string" },
+        "subtopicId": { "type": "string" },
+        "noteId": { "type": "string" },
+        "testTitle": { "type": "string" },
+        "scoreObtained": { "type": "number" },
+        "totalMarks": { "type": "number" },
+        "percentage": { "type": "number" },
+        "summaryText": { "type": "string" },
+        "takenDate": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "subjectId", "topicId", "subtopicId", "testTitle", "scoreObtained", "totalMarks", "percentage", "takenDate", "createdAt", "updatedAt"]
+    },
+    "StudyLog": {
+      "title": "StudyLog",
+      "description": "Daily revision & exam plan entry (planned or studied).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "dateKey": { "type": "string" },
+        "entryType": { "type": "string", "enum": ["PLANNED", "STUDIED"] },
+        "title": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "subtopicId": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "dateKey", "entryType", "title", "completed", "createdAt", "updatedAt"]
+    },
+    "RevisionDiaryEntry": {
+      "title": "RevisionDiaryEntry",
+      "description": "Revision Diary entry with study material and source name.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "dateKey": { "type": "string" },
+        "title": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "sourceName": { "type": "string" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "dateKey", "title", "sourceName", "content", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile, exam settings, and theme."
+    },
+    "/users/{userId}/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/Subject" },
+      "description": "User subjects."
+    },
+    "/users/{userId}/topics/{topicId}": {
+      "schema": { "$ref": "#/entities/Topic" },
+      "description": "User topics."
+    },
+    "/users/{userId}/subtopics/{subtopicId}": {
+      "schema": { "$ref": "#/entities/Subtopic" },
+      "description": "User subtopics."
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/StudyNote" },
+      "description": "User notes and folders."
+    },
+    "/users/{userId}/videos/{videoId}": {
+      "schema": { "$ref": "#/entities/VideoLink" },
+      "description": "User YouTube links."
+    },
+    "/users/{userId}/mcqs/{mcqId}": {
+      "schema": { "$ref": "#/entities/McqQuestion" },
+      "description": "User practice MCQs."
+    },
+    "/users/{userId}/testResults/{resultId}": {
+      "schema": { "$ref": "#/entities/TestResult" },
+      "description": "HTML test and MCQ attempt scores."
+    },
+    "/users/{userId}/studyLogs/{logId}": {
+      "schema": { "$ref": "#/entities/StudyLog" },
+      "description": "Daily revision logs and exam study plans."
+    },
+    "/users/{userId}/revisionDiary/{entryId}": {
+      "schema": { "$ref": "#/entities/RevisionDiaryEntry" },
+      "description": "Revision Diary entries with source names and notes."
+    }
+  }
+}

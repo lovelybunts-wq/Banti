@@ -1,0 +1,6 @@
+{
+  "name": "Learn Talent",
+  "description": "Organized study notes, HTML mock tests, YouTube links, biometric lock, cloud sync, and exam revision planner.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
