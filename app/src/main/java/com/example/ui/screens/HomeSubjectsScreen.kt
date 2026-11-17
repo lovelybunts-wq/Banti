@@ -26,9 +26,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AdminPanelSettings
+import androidx.compose.material.icons.rounded.Assignment
 import androidx.compose.material.icons.rounded.Book
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
@@ -69,6 +70,8 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.model.BookmarkItem
 import com.example.data.model.BookmarkType
+import com.example.data.model.FullLengthExam
+import com.example.data.model.FullLengthExamDefaults
 import com.example.data.model.PersonalNote
 import com.example.data.model.RecentActivityItem
 import com.example.data.model.RevisionDiaryEntry
@@ -85,13 +88,13 @@ import com.example.ui.components.Tactile3DBadge
 import com.example.ui.components.Tactile3DCard
 import com.example.ui.components.TactileIconOrb
 import com.example.ui.theme.LocalStudyTheme
-import java.io.File
 
 @Composable
 fun HomeSubjectsScreen(
     subjectsState: UiState<List<Subject>>,
     topicsState: UiState<List<Topic>>,
     notesState: UiState<List<StudyNote>>,
+    fullLengthExamsState: UiState<List<FullLengthExam>>,
     studyLogsState: UiState<List<StudyLog>>,
     revisionDiaryState: UiState<List<RevisionDiaryEntry>>,
     personalNotesState: UiState<List<PersonalNote>>,
@@ -101,17 +104,16 @@ fun HomeSubjectsScreen(
     displayName: String,
     photoUrl: String?,
     isAdminUser: Boolean,
-    isOfflineSession: Boolean,
-    customLogoFile: File?,
     onToggleLightDark: () -> Unit,
     onSubjectClick: (Subject) -> Unit,
+    onOpenFullLengthTests: () -> Unit,
     onOpenRecentActivity: (RecentActivityItem) -> Unit,
     onOpenRevisionTab: () -> Unit,
     onOpenSettingsTab: () -> Unit,
     onOpenPersonalNotes: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenAdminPanel: () -> Unit,
-    onOpenWhatsAppRequest: () -> Unit,
+    onOpenSupport: () -> Unit,
     onBookmarkSubject: (Subject) -> Unit,
     onAddSubject: (String, String?, String, String, Long) -> Unit,
 ) {
@@ -121,11 +123,20 @@ fun HomeSubjectsScreen(
 
     val topics = (topicsState as? UiState.Success)?.data ?: emptyList()
     val notes = (notesState as? UiState.Success)?.data ?: emptyList()
+    val fullLengthExams = (fullLengthExamsState as? UiState.Success)?.data ?: FullLengthExamDefaults.builtInExams
+    val fullLengthTestCount = remember(notes) {
+        notes.count { it.subjectId == FullLengthExamDefaults.SUBJECT_ID }
+    }
     val logs = (studyLogsState as? UiState.Success)?.data ?: emptyList()
     val diaryEntries = (revisionDiaryState as? UiState.Success)?.data ?: emptyList()
     val personalNotes = (personalNotesState as? UiState.Success)?.data ?: emptyList()
     val bookmarks = (bookmarksState as? UiState.Success)?.data ?: emptyList()
     val profile = (profileState as? UiState.Success)?.data
+    val resolvedName = remember(profile?.displayName, displayName) {
+        profile?.displayName?.trim()?.takeIf { it.isNotBlank() && it != "Learner" }
+            ?: displayName.trim().takeIf { it.isNotBlank() }
+            ?: "Student"
+    }
 
     val yesterdayKey = remember { StudyRepository.yesterdayKey() }
     val yesterdayLogs = remember(logs, yesterdayKey) {
@@ -165,8 +176,8 @@ fun HomeSubjectsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     LearnTalentBrandHeader(
-                        customLogoFile = customLogoFile,
-                        subtitle = if (isOfflineSession) "Offline Mode • नोट्स व मॉक टेस्ट" else "Hello, ${displayName.substringBefore(' ')}",
+                        customLogoFile = null,
+                        subtitle = "Hello, ${resolvedName.substringBefore(' ')}",
                         modifier = Modifier.weight(1f)
                     )
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -178,7 +189,7 @@ fun HomeSubjectsScreen(
                             )
                         }
                         Box(modifier = Modifier.clickable { onOpenSettingsTab() }.testTag("home_profile_avatar_btn")) {
-                            StudentAvatar(photoUrl = photoUrl, displayName = displayName, size = 38.dp)
+                            StudentAvatar(photoUrl = photoUrl, displayName = resolvedName, size = 38.dp)
                         }
                     }
                 }
@@ -232,9 +243,49 @@ fun HomeSubjectsScreen(
                                             Spacer(Modifier.width(12.dp))
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text("Admin Control Center (Upload & Analytics)", style = MaterialTheme.typography.titleSmall, color = theme.tertiary, fontWeight = FontWeight.Bold)
-                                                Text("सभी छात्रों के लिए PDF/HTML टेस्ट अपलोड, छात्र रिजल्ट व WhatsApp अनुरोध देखें", style = MaterialTheme.typography.bodySmall, color = theme.onSurfaceVariant)
+                                                Text("सभी छात्रों के लिए PDF/HTML टेस्ट अपलोड, छात्र रिजल्ट व अनुरोध देखें", style = MaterialTheme.typography.bodySmall, color = theme.onSurfaceVariant)
                                             }
                                             Tactile3DBadge(text = "ADMIN", color = theme.tertiary)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Prominent Outside Full Length Tests Card
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Tactile3DCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    accentColor = theme.primary,
+                                    onClick = onOpenFullLengthTests,
+                                    testTag = "home_full_length_tests_card",
+                                    contentPadding = PaddingValues(14.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            TactileIconOrb(icon = Icons.Rounded.Assignment, tint = theme.primary, size = 46.dp)
+                                            Spacer(Modifier.width(12.dp))
+                                            Column {
+                                                Text(
+                                                    text = "Full Length Tests (फुल लेंथ टेस्ट)",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    color = theme.primary,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = "एग्जाम चुनें, नया एग्जाम बनाएं व .html मॉक टेस्ट अपलोड कर तुरंत टेस्ट दें",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = theme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Tactile3DBadge(text = "${fullLengthExams.size} Exams", color = theme.primary)
+                                            Tactile3DBadge(text = "$fullLengthTestCount Tests", color = theme.secondary)
                                         }
                                     }
                                 }
@@ -310,7 +361,7 @@ fun HomeSubjectsScreen(
                                     }
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         QuickHubCard(Modifier.weight(1f), Icons.Rounded.Book, theme.secondary, "रिवीजन डायरी", "${diaryEntries.size} एंट्री", "home_revision_diary_quick_card", onOpenRevisionTab)
-                                        QuickHubCard(Modifier.weight(1f), Icons.AutoMirrored.Rounded.Send, theme.success, "टेस्ट / नोट्स मांगें", "WhatsApp Admin", "home_whatsapp_request_card", onOpenWhatsAppRequest)
+                                        QuickHubCard(Modifier.weight(1f), Icons.AutoMirrored.Rounded.HelpOutline, theme.success, "Support", "नोट्स / टेस्ट अनुरोध", "home_whatsapp_request_card", onOpenSupport)
                                     }
                                 }
                             }

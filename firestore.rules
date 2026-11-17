@@ -204,6 +204,14 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidFullLengthExam(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             (!('subtitle' in data) || (data.subtitle is string && data.subtitle.size() <= 200)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     match /appConfig/support {
       allow get: if isSignedIn();
       allow create, update: if isAdmin() &&
@@ -301,6 +309,17 @@ service cloud.firestore {
                                incoming().question is string && incoming().question.size() >= 1 && incoming().question.size() <= 500 &&
                                incoming().options is list && incoming().options.size() >= 2 && incoming().options.size() <= 6 &&
                                incoming().correctIndex is int && incoming().correctIndex >= 0 && incoming().correctIndex < incoming().options.size() &&
+                               incoming().published is bool &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /sharedFullLengthExams/{examId} {
+      allow get: if (isSignedIn() && existing().published == true) || isAdmin();
+      allow list: if isSignedIn();
+      allow create, update: if isAdmin() && isValidId(examId) &&
+                               incoming().name is string && incoming().name.size() >= 1 && incoming().name.size() <= 120 &&
+                               (!('subtitle' in incoming()) || (incoming().subtitle is string && incoming().subtitle.size() <= 200)) &&
                                incoming().published is bool &&
                                incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
       allow delete: if isAdmin();
@@ -558,6 +577,22 @@ service cloud.firestore {
                          incoming().createdAt == existing().createdAt &&
                          incoming().diff(existing()).affectedKeys().hasOnly(['bookmarkType', 'title', 'subtitle', 'refId', 'subjectId', 'topicId', 'subtopicId', 'pageIndex', 'questionJson', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(bookmarkId);
+      }
+
+      match /fullLengthExams/{examId} {
+        allow get: if isOwner(userId) && isValidId(examId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(examId) &&
+                         incoming().keys().hasAll(['userId', 'name', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'name', 'subtitle', 'createdAt', 'updatedAt']) &&
+                         isValidFullLengthExam(incoming(), userId);
+        allow update: if isSignedIn() &&
+                         isValidFullLengthExam(incoming(), userId) &&
+                         isOwner(userId) && isValidId(examId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'subtitle', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(examId);
       }
     }
   }

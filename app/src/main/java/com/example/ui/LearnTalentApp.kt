@@ -58,17 +58,19 @@ import com.example.data.local.LocalFileStorage
 import com.example.data.local.LocalOfflineStore
 import com.example.data.local.UserPreferencesManager
 import com.example.data.model.BookmarkType
+import com.example.data.model.FullLengthExamDefaults
 import com.example.data.model.NoteType
 import com.example.data.model.StudyNote
 import com.example.data.model.UiState
 import com.example.data.remote.CloudStorageService
-import com.example.data.remote.GoogleDriveBackupManager
 import com.example.data.remote.SharedCatalogRepository
 import com.example.data.remote.StudyRepository
 import com.example.ui.auth.AuthScreen
 import com.example.ui.components.WhatsAppRequestDialog
 import com.example.ui.navigation.AdminPanelRoute
 import com.example.ui.navigation.BookmarksRoute
+import com.example.ui.navigation.FullLengthExamTestsRoute
+import com.example.ui.navigation.FullLengthExamsRoute
 import com.example.ui.navigation.HtmlTestRoute
 import com.example.ui.navigation.ImageViewerRoute
 import com.example.ui.navigation.McqPracticeRoute
@@ -83,6 +85,8 @@ import com.example.ui.navigation.TestResultRoute
 import com.example.ui.navigation.TopicsRoute
 import com.example.ui.screens.AdminPanelScreen
 import com.example.ui.screens.BookmarksScreen
+import com.example.ui.screens.FullLengthExamTestsScreen
+import com.example.ui.screens.FullLengthExamsScreen
 import com.example.ui.screens.HomeSubjectsScreen
 import com.example.ui.screens.HtmlTestScreen
 import com.example.ui.screens.ImageViewerScreen
@@ -110,6 +114,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
+    trySend(currentUser)
     val listener = FirebaseAuth.AuthStateListener { auth -> trySend(auth.currentUser) }
     addAuthStateListener(listener)
     awaitClose { removeAuthStateListener(listener) }
@@ -126,65 +131,36 @@ fun LearnTalentApp(isCompactWidth: Boolean) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { UserPreferencesManager(context.applicationContext) }
-    val fileStorage = remember { LocalFileStorage(context.applicationContext) }
     val localSettings by prefs.settingsFlow.collectAsStateWithLifecycle(initialValue = LocalAppSettings())
-    val customLogoFile = remember(localSettings.customLogoFileName) {
-        fileStorage.getCustomLogoFile(localSettings.customLogoFileName)
-    }
 
     val firebaseReady = remember { GoogleAuthHelper.isFirebaseInitialized(context) }
-    val currentUser by remember(firebaseReady) {
+    val authFlowUser by remember(firebaseReady) {
         if (firebaseReady) Firebase.auth.authStateFlow() else flowOf(null)
     }.collectAsStateWithLifecycle(initialValue = GoogleAuthHelper.safeCurrentUser(context))
 
-    var pendingInitialDriveToken by remember { mutableStateOf<String?>(null) }
+    var manualSignedInUser by remember { mutableStateOf<FirebaseUser?>(null) }
+    val user = authFlowUser ?: manualSignedInUser
 
     LearnTalentTheme(themeOption = localSettings.themeOption) {
-        val user = currentUser
-        val driveUid = localSettings.driveUserId.takeIf { it.isNotBlank() }
-        if (user == null && driveUid == null && !localSettings.offlineModeAccepted) {
+        if (user == null) {
             AuthScreen(
-                customLogoFile = customLogoFile,
-                onAuthSuccess = {},
-                onDriveSignInSuccess = { profile, token ->
-                    pendingInitialDriveToken = token
-                    scope.launch {
-                        prefs.setDriveUserSession(profile.id, profile.email, profile.name, profile.photoUrl ?: "")
-                        prefs.setOfflineModeAccepted(false)
-                    }
-                },
-                onContinueOffline = {
-                    scope.launch { prefs.setOfflineModeAccepted(true) }
+                onAuthSuccess = { signedInUser ->
+                    manualSignedInUser = signedInUser ?: GoogleAuthHelper.safeCurrentUser(context)
                 }
             )
         } else {
-            val sessionKey = user?.uid ?: driveUid ?: LocalOfflineStore.OFFLINE_UID
-            val resolvedDisplayName = user?.displayName?.takeIf { it.isNotBlank() }
-                ?: localSettings.driveUserName.takeIf { it.isNotBlank() }
-                ?: "Offline Learner"
-            val resolvedEmail = user?.email?.takeIf { it.isNotBlank() }
-                ?: localSettings.driveUserEmail.takeIf { it.isNotBlank() }
-            val resolvedPhotoUrl = user?.photoUrl?.toString()?.takeIf { it.isNotBlank() }
-                ?: localSettings.driveUserPhotoUrl.takeIf { it.isNotBlank() }
-            key(sessionKey) {
+            val resolvedDisplayName = GoogleAuthHelper.resolveDisplayName(user)
+            val resolvedEmail = GoogleAuthHelper.resolveEmail(user)
+            val resolvedPhotoUrl = GoogleAuthHelper.resolvePhotoUrl(user)
+            key(user.uid) {
                 AuthenticatedAppContent(
-                    firebaseUid = user?.uid,
-                    driveUserId = driveUid,
+                    firebaseUid = user.uid,
                     signedInEmail = resolvedEmail,
                     displayName = resolvedDisplayName,
                     photoUrl = resolvedPhotoUrl,
-                    initialDriveToken = pendingInitialDriveToken,
-                    onConsumeInitialDriveToken = { pendingInitialDriveToken = null },
                     isCompactWidth = isCompactWidth,
-                    onDriveSignInSuccess = { profile, token ->
-                        pendingInitialDriveToken = token
-                        scope.launch {
-                            prefs.setDriveUserSession(profile.id, profile.email, profile.name, profile.photoUrl ?: "")
-                            prefs.setOfflineModeAccepted(false)
-                        }
-                    },
                     onSignedOutResetSession = {
-                        pendingInitialDriveToken = null
+                        manualSignedInUser = null
                         scope.launch {
                             prefs.clearDriveUserSession()
                             prefs.setOfflineModeAccepted(false)
@@ -198,42 +174,32 @@ fun LearnTalentApp(isCompactWidth: Boolean) {
 
 @Composable
 private fun AuthenticatedAppContent(
-    firebaseUid: String?,
-    driveUserId: String?,
+    firebaseUid: String,
     signedInEmail: String?,
     displayName: String,
     photoUrl: String?,
-    initialDriveToken: String?,
-    onConsumeInitialDriveToken: () -> Unit,
     isCompactWidth: Boolean,
-    onDriveSignInSuccess: (profile: com.example.data.remote.GoogleDriveProfile, accessToken: String) -> Unit,
     onSignedOutResetSession: () -> Unit,
 ) {
     val context = LocalContext.current
-    val sessionKey = firebaseUid ?: driveUserId?.takeIf { it.isNotBlank() } ?: LocalOfflineStore.OFFLINE_UID
-    val driveBackupManager = remember { GoogleDriveBackupManager() }
     val fileStorage = remember { LocalFileStorage(context.applicationContext) }
     val isAdminUser = signedInEmail.equals(UserPreferencesManager.ADMIN_EMAIL, ignoreCase = true)
 
     val viewModel: MainViewModel = viewModel(
-        key = sessionKey,
+        key = firebaseUid,
         factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[APPLICATION_KEY]) { "APPLICATION_KEY missing" } as Application
-                val db = if (firebaseUid != null) {
-                    FirebaseFirestore.getInstance(app.getString(R.string.firestore_database_id))
-                } else null
+                val db = FirebaseFirestore.getInstance(app.getString(R.string.firestore_database_id))
                 MainViewModel(
                     appContext = app.applicationContext,
-                    repository = db?.let { StudyRepository(it) },
-                    sharedRepo = db?.let { SharedCatalogRepository(it) },
+                    repository = StudyRepository(db),
+                    sharedRepo = SharedCatalogRepository(db),
                     cloudStorage = CloudStorageService(app.applicationContext),
-                    offlineStore = LocalOfflineStore(app.applicationContext, ownerId = sessionKey),
+                    offlineStore = LocalOfflineStore(app.applicationContext, ownerId = firebaseUid),
                     fileStorage = LocalFileStorage(app.applicationContext),
                     prefs = UserPreferencesManager(app.applicationContext),
-                    driveBackupManager = driveBackupManager,
                     firebaseUid = firebaseUid,
-                    driveUserId = driveUserId,
                     initialDisplayName = displayName,
                     signedInEmail = signedInEmail,
                     initialPhotoUrl = photoUrl,
@@ -242,19 +208,11 @@ private fun AuthenticatedAppContent(
         }
     )
 
-    LaunchedEffect(initialDriveToken, viewModel) {
-        if (!initialDriveToken.isNullOrBlank()) {
-            viewModel.triggerDriveSyncAfterLogin(initialDriveToken)
-            onConsumeInitialDriveToken()
-        }
-    }
-
     val localSettings by viewModel.localSettings.collectAsStateWithLifecycle()
-    val customLogoFile = remember(localSettings.customLogoFileName) { viewModel.getCustomLogoFile(localSettings.customLogoFileName) }
-    var isVaultUnlocked by rememberSaveable(sessionKey) { mutableStateOf(false) }
+    var isVaultUnlocked by rememberSaveable(firebaseUid) { mutableStateOf(false) }
 
     if (localSettings.biometricLockEnabled && !isVaultUnlocked) {
-        BiometricLockScreen(customLogoFile = customLogoFile, onUnlocked = { isVaultUnlocked = true })
+        BiometricLockScreen(customLogoFile = null, onUnlocked = { isVaultUnlocked = true })
         return
     }
 
@@ -273,6 +231,7 @@ private fun AuthenticatedAppContent(
     val notesState by viewModel.notesState.collectAsStateWithLifecycle()
     val videosState by viewModel.videosState.collectAsStateWithLifecycle()
     val mcqsState by viewModel.mcqsState.collectAsStateWithLifecycle()
+    val fullLengthExamsState by viewModel.fullLengthExamsState.collectAsStateWithLifecycle()
     val testResultsState by viewModel.testResultsState.collectAsStateWithLifecycle()
     val studyLogsState by viewModel.studyLogsState.collectAsStateWithLifecycle()
     val revisionDiaryState by viewModel.revisionDiaryState.collectAsStateWithLifecycle()
@@ -283,7 +242,6 @@ private fun AuthenticatedAppContent(
     val sharedDownloadProgress by viewModel.sharedDownloadProgress.collectAsStateWithLifecycle()
     val profileState by viewModel.profileState.collectAsStateWithLifecycle()
     val lastReturnedScore by viewModel.lastReturnedScore.collectAsStateWithLifecycle()
-    val isDriveBusy by viewModel.isDriveBusy.collectAsStateWithLifecycle()
 
     val subjects = (subjectsState as? UiState.Success)?.data ?: emptyList()
     val topics = (topicsState as? UiState.Success)?.data ?: emptyList()
@@ -291,9 +249,13 @@ private fun AuthenticatedAppContent(
     val notes = (notesState as? UiState.Success)?.data ?: emptyList()
     val videos = (videosState as? UiState.Success)?.data ?: emptyList()
     val mcqs = (mcqsState as? UiState.Success)?.data ?: emptyList()
+    val fullLengthExams = (fullLengthExamsState as? UiState.Success)?.data ?: FullLengthExamDefaults.builtInExams
     val testResults = (testResultsState as? UiState.Success)?.data ?: emptyList()
     val personalNotes = (personalNotesState as? UiState.Success)?.data ?: emptyList()
     val bookmarks = (bookmarksState as? UiState.Success)?.data ?: emptyList()
+    val profile = (profileState as? UiState.Success)?.data
+
+    val resolvedStudentName = profile?.displayName?.trim()?.takeIf { it.isNotBlank() && it != "Learner" } ?: displayName
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDest = navBackStackEntry?.destination
@@ -383,18 +345,28 @@ private fun AuthenticatedAppContent(
                 NavHost(navController = navController, startDestination = SubjectsHomeRoute) {
                     composable<SubjectsHomeRoute> {
                         HomeSubjectsScreen(
-                            subjectsState = subjectsState, topicsState = topicsState, notesState = notesState,
-                            studyLogsState = studyLogsState, revisionDiaryState = revisionDiaryState,
-                            personalNotesState = personalNotesState, bookmarksState = bookmarksState,
-                            recentActivities = recentActivities, profileState = profileState,
-                            displayName = displayName, photoUrl = photoUrl, isAdminUser = isAdminUser,
-                            isOfflineSession = viewModel.isOfflineSession, customLogoFile = customLogoFile,
+                            subjectsState = subjectsState,
+                            topicsState = topicsState,
+                            notesState = notesState,
+                            fullLengthExamsState = fullLengthExamsState,
+                            studyLogsState = studyLogsState,
+                            revisionDiaryState = revisionDiaryState,
+                            personalNotesState = personalNotesState,
+                            bookmarksState = bookmarksState,
+                            recentActivities = recentActivities,
+                            profileState = profileState,
+                            displayName = resolvedStudentName,
+                            photoUrl = photoUrl,
+                            isAdminUser = isAdminUser,
                             onToggleLightDark = { viewModel.toggleLightDarkTheme() },
                             onSubjectClick = { navController.navigate(TopicsRoute(it.id)) },
+                            onOpenFullLengthTests = { navController.navigate(FullLengthExamsRoute) },
                             onOpenRecentActivity = { act ->
                                 val note = notes.firstOrNull { it.id == act.refId }
                                 if (note != null) openNoteDestination(note, act.subtitle)
-                                else if (act.subjectId.isNotBlank() && act.topicId.isNotBlank() && act.subtopicId.isNotBlank()) {
+                                else if (act.subjectId == FullLengthExamDefaults.SUBJECT_ID && act.topicId.isNotBlank()) {
+                                    navController.navigate(FullLengthExamTestsRoute(act.topicId))
+                                } else if (act.subjectId.isNotBlank() && act.topicId.isNotBlank() && act.subtopicId.isNotBlank()) {
                                     navController.navigate(SubtopicDetailRoute(act.subjectId, act.topicId, act.subtopicId))
                                 }
                             },
@@ -403,11 +375,49 @@ private fun AuthenticatedAppContent(
                             onOpenPersonalNotes = { navController.navigate(PersonalNotesRoute()) },
                             onOpenBookmarks = { navController.navigate(BookmarksRoute) },
                             onOpenAdminPanel = { navController.navigate(AdminPanelRoute) },
-                            onOpenWhatsAppRequest = { whatsAppPrefill = WhatsAppRequestPrefill() },
+                            onOpenSupport = { whatsAppPrefill = WhatsAppRequestPrefill() },
                             onBookmarkSubject = { subj ->
                                 viewModel.toggleBookmark(BookmarkType.SAVED_TOPIC, subj.nameEn, subj.nameHi ?: "Subject", subj.id, subjectId = subj.id)
                             },
                             onAddSubject = { en, hi, icon, hex, order -> viewModel.addSubject(en, hi, icon, hex, order) }
+                        )
+                    }
+
+                    composable<FullLengthExamsRoute> {
+                        FullLengthExamsScreen(
+                            examsState = fullLengthExamsState,
+                            notes = notes,
+                            testResults = testResults,
+                            isAdminUser = isAdminUser,
+                            onBack = { navController.popBackStack() },
+                            onExamClick = { exam -> navController.navigate(FullLengthExamTestsRoute(exam.id)) },
+                            onCreateExam = { name, subtitle -> viewModel.addFullLengthExam(name, subtitle) },
+                            onDeleteExam = { exam -> viewModel.deleteFullLengthExam(exam) }
+                        )
+                    }
+
+                    composable<FullLengthExamTestsRoute> { entry ->
+                        val route = entry.toRoute<FullLengthExamTestsRoute>()
+                        val exam = fullLengthExams.firstOrNull { it.id == route.examId }
+                        val examTests = notes.filter {
+                            it.subjectId == FullLengthExamDefaults.SUBJECT_ID && it.topicId == route.examId
+                        }
+                        FullLengthExamTestsScreen(
+                            exam = exam,
+                            examId = route.examId,
+                            tests = examTests,
+                            testResults = testResults.filter { it.subjectId == FullLengthExamDefaults.SUBJECT_ID && it.topicId == route.examId },
+                            isAdminUser = isAdminUser,
+                            onBack = { navController.popBackStack() },
+                            onUploadHtmlTest = { title, uri ->
+                                viewModel.uploadFullLengthHtmlTest(route.examId, exam?.name ?: "Full Length Test", title, uri)
+                            },
+                            onCreateSampleTest = { title ->
+                                viewModel.createSampleFullLengthTest(route.examId, exam?.name ?: "Full Length Test", title)
+                            },
+                            onStartTest = { note -> openNoteDestination(note, exam?.name ?: "Full Length Test") },
+                            onOpenResult = { resultId -> navController.navigate(TestResultRoute(resultId)) },
+                            onDeleteTest = { note -> viewModel.deleteNote(note) }
                         )
                     }
 
@@ -525,7 +535,11 @@ private fun AuthenticatedAppContent(
                     composable<HtmlTestRoute> { entry ->
                         val route = entry.toRoute<HtmlTestRoute>()
                         val note = notes.firstOrNull { it.id == route.noteId }
-                        val subjectName = subjects.firstOrNull { it.id == route.subjectId }?.nameEn ?: "Study"
+                        val subjectName = if (route.subjectId == FullLengthExamDefaults.SUBJECT_ID) {
+                            fullLengthExams.firstOrNull { it.id == route.topicId }?.name ?: "Full Length Test"
+                        } else {
+                            subjects.firstOrNull { it.id == route.subjectId }?.nameEn ?: "Study"
+                        }
                         HtmlTestScreen(
                             note = note, subjectId = route.subjectId, topicId = route.topicId, subtopicId = route.subtopicId,
                             isTestMode = route.isTestMode, existingDraft = viewModel.loadInProgressTestAttempt(route.noteId),
@@ -606,7 +620,7 @@ private fun AuthenticatedAppContent(
                         PersonalNotesScreen(
                             notes = personalNotes, subjects = subjects,
                             initialSubjectId = route.subjectId, initialNoteId = route.noteId,
-                            userFilesDir = fileStorage.userDir(sessionKey),
+                            userFilesDir = fileStorage.userDir(firebaseUid),
                             onSaveNote = { viewModel.upsertPersonalNote(it) },
                             onDeleteNote = { viewModel.deletePersonalNote(it) },
                             onAttachImage = { nId, uri, cb -> viewModel.copyPersonalNoteImage(nId, uri, cb) },
@@ -670,7 +684,7 @@ private fun AuthenticatedAppContent(
                         RevisionPlannerScreen(
                             studyLogsState = studyLogsState, revisionDiaryState = revisionDiaryState,
                             subjectsState = subjectsState, profileState = profileState,
-                            localSettings = localSettings, customLogoFile = customLogoFile,
+                            localSettings = localSettings,
                             onAddStudyPlanItem = { dateKey, type, title, subj, noteText -> viewModel.addStudyPlanItem(dateKey, type, title, subj, noteText) },
                             onToggleCompleted = { viewModel.toggleStudyLogCompleted(it) },
                             onDeleteLog = { viewModel.deleteStudyLog(it) },
@@ -687,29 +701,19 @@ private fun AuthenticatedAppContent(
 
                     composable<SettingsRoute> {
                         SettingsScreen(
-                            localSettings = localSettings, isOfflineSession = viewModel.isOfflineSession,
-                            signedInEmail = signedInEmail, signedInName = displayName,
-                            signedInPhotoUrl = photoUrl, uidLabel = sessionKey, isAdminUser = isAdminUser,
-                            isDriveBusy = isDriveBusy, customLogoFile = customLogoFile,
-                            driveBackupManager = driveBackupManager,
+                            localSettings = localSettings,
+                            signedInEmail = signedInEmail,
+                            signedInName = resolvedStudentName,
+                            signedInPhotoUrl = photoUrl,
+                            uidLabel = firebaseUid,
+                            isAdminUser = isAdminUser,
                             onToggleLightDark = { viewModel.toggleLightDarkTheme() },
                             onSelectTheme = { viewModel.selectTheme(it) },
                             onToggleBiometricLock = { viewModel.setBiometricLockEnabled(it) },
                             onLockNow = { isVaultUnlocked = false },
-                            onToggleCloudSync = { viewModel.setCloudSyncEnabled(it) },
                             onOpenAdminPanel = { navController.navigate(AdminPanelRoute) },
-                            onSaveWhatsAppNumber = { viewModel.saveAdminWhatsAppNumber(it) },
-                            onOpenWhatsAppRequest = { whatsAppPrefill = WhatsAppRequestPrefill() },
-                            onPickCustomLogo = { viewModel.saveCustomLogo(it) },
-                            onResetCustomLogo = { viewModel.resetCustomLogo() },
-                            onDriveBackupWithToken = { viewModel.runDriveBackupWithToken(it) },
-                            onDriveRestoreWithToken = { viewModel.runDriveRestoreWithToken(it) },
-                            onBuildBackupJson = { viewModel.buildBackupJson() },
-                            onRestoreBackupJson = { viewModel.restoreFromBackupJson(it) },
-                            onShowMessage = { viewModel.showToast(it) },
-                            onSignedOut = onSignedOutResetSession,
-                            onSignedInFromOffline = { viewModel.showToast("Google लॉगिन सफल! डेटा सिंक हो रहा है...") },
-                            onDriveSignInSuccess = onDriveSignInSuccess
+                            onOpenSupport = { whatsAppPrefill = WhatsAppRequestPrefill() },
+                            onSignedOut = onSignedOutResetSession
                         )
                     }
                 }
@@ -720,7 +724,7 @@ private fun AuthenticatedAppContent(
     val prefill = whatsAppPrefill
     if (prefill != null) {
         WhatsAppRequestDialog(
-            studentName = displayName,
+            studentName = resolvedStudentName,
             initialSubject = prefill.subject,
             initialTopic = prefill.topic,
             initialSubtopic = prefill.subtopic,

@@ -364,3 +364,32 @@ data class StudentSummary(
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )
+
+@Keep
+@IgnoreExtraProperties
+data class FullLengthExam(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val name: String = "",
+    val subtitle: String? = null,
+    val isShared: Boolean = false,
+    val published: Boolean = true,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+object FullLengthExamDefaults {
+    const val SUBJECT_ID = "full_length_exam"
+    const val SUBTOPIC_ID = "full_length_html"
+
+    val builtInExams: List<FullLengthExam> = listOf(
+        FullLengthExam(id = "exam_mppsc_prelims", name = "MPPSC Prelims", subtitle = "GS Paper 1 & CSAT Full Mock Tests", isShared = false, published = true),
+        FullLengthExam(id = "exam_mp_patwari", name = "MP Patwari / Vyapam", subtitle = "ESB Combined Group 2 & Patwari Tests", isShared = false, published = true),
+        FullLengthExam(id = "exam_ssc_cgl", name = "SSC CGL / CHSL", subtitle = "Tier 1 & Tier 2 Full Length Tests", isShared = false, published = true),
+        FullLengthExam(id = "exam_upsc_prelims", name = "UPSC CSE Prelims", subtitle = "General Studies & CSAT Full Papers", isShared = false, published = true),
+        FullLengthExam(id = "exam_mp_police", name = "MP Police / SI", subtitle = "Constable & Sub-Inspector Full Tests", isShared = false, published = true),
+        FullLengthExam(id = "exam_banking_ibps", name = "Banking (IBPS / SBI)", subtitle = "PO & Clerk Prelims/Mains Mock Tests", isShared = false, published = true),
+        FullLengthExam(id = "exam_railway_rrb", name = "Railway RRB (NTPC / Group D)", subtitle = "CBT-1 & CBT-2 Full Length Mock Tests", isShared = false, published = true),
+    )
+}
+

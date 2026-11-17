@@ -135,6 +135,20 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "displayName", "downloadsCount", "testAttemptsCount", "averageScorePct", "lastActiveMillis", "createdAt", "updatedAt"]
+    },
+    "FullLengthExam": {
+      "title": "FullLengthExam",
+      "description": "Exam category for full-length HTML mock tests created by students or shared by admin.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "published": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "name", "updatedAt"]
     }
   },
   "firestore": {
@@ -142,6 +156,8 @@
     "/users/{userId}/personalNotes/{noteId}": { "schema": { "$ref": "#/entities/PersonalNote" } },
     "/users/{userId}/pdfAnnotations/{docId}": { "schema": { "$ref": "#/entities/PdfAnnotationDoc" } },
     "/users/{userId}/bookmarks/{bookmarkId}": { "schema": { "$ref": "#/entities/BookmarkItem" } },
+    "/users/{userId}/fullLengthExams/{examId}": { "schema": { "$ref": "#/entities/FullLengthExam" } },
+    "/sharedFullLengthExams/{examId}": { "schema": { "$ref": "#/entities/FullLengthExam" } },
     "/sharedContent/{contentId}": { "schema": { "$ref": "#/entities/SharedContentItem" } },
     "/whatsappRequests/{requestId}": { "schema": { "$ref": "#/entities/WhatsAppRequestRecord" } },
     "/studentSummaries/{userId}": { "schema": { "$ref": "#/entities/StudentSummary" } }

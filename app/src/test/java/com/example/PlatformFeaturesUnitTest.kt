@@ -2,12 +2,15 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.auth.GoogleAuthHelper
 import com.example.data.local.LocalFileStorage
 import com.example.data.local.LocalOfflineStore
 import com.example.data.local.PdfExportHelper
 import com.example.data.model.BookmarkItem
 import com.example.data.model.BookmarkType
 import com.example.data.model.DefaultSubjectsSeed
+import com.example.data.model.FullLengthExam
+import com.example.data.model.FullLengthExamDefaults
 import com.example.data.model.InProgressTestAttempt
 import com.example.data.model.NormalizedPoint
 import com.example.data.model.PdfAnnotationDocument
@@ -253,5 +256,36 @@ class PlatformFeaturesUnitTest {
             BookmarkItem(id = "b2", bookmarkType = BookmarkType.PDF_PAGE.name, title = "Page 5", pageIndex = 4)
         )
         assertEquals(1, bookmarks.count { it.bookmarkType == BookmarkType.PDF_PAGE.name })
+    }
+
+    @Test
+    fun `full length exam defaults and merge preserve built in custom and published shared exams`() {
+        assertEquals("full_length_exam", FullLengthExamDefaults.SUBJECT_ID)
+        assertEquals("full_length_html", FullLengthExamDefaults.SUBTOPIC_ID)
+        val builtIn = FullLengthExamDefaults.builtInExams
+        assertEquals(7, builtIn.size)
+
+        val custom = listOf(
+            FullLengthExam(id = "fl_custom_1", userId = "uid_1", name = "MPPSC Mains Mock", isShared = false, published = true)
+        )
+        val shared = listOf(
+            FullLengthExam(id = "fl_shared_pub", userId = "admin", name = "SSC Special Test", isShared = true, published = true),
+            FullLengthExam(id = "fl_shared_draft", userId = "admin", name = "Draft Exam", isShared = true, published = false)
+        )
+
+        val merged = SharedCatalogMergeHelper.mergeFullLengthExams(builtIn, custom, shared)
+        assertEquals(9, merged.size)
+        assertTrue(merged.any { it.id == "exam_mppsc_prelims" })
+        assertTrue(merged.any { it.id == "fl_custom_1" && !it.isShared })
+        assertTrue(merged.any { it.id == "fl_shared_pub" && it.isShared })
+        assertFalse(merged.any { it.id == "fl_shared_draft" })
+    }
+
+    @Test
+    fun `google auth helper resolves default_web_client_id from generated resources`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val clientId = GoogleAuthHelper.resolveWebClientId(context)
+        assertNotNull(clientId)
+        assertTrue(clientId!!.contains(".apps.googleusercontent.com"))
     }
 }

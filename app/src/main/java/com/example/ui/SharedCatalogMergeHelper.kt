@@ -8,6 +8,7 @@ import com.example.data.local.OfflineSubtopicDto
 import com.example.data.local.OfflineTopicDto
 import com.example.data.local.OfflineVideoDto
 import com.example.data.local.toModel
+import com.example.data.model.FullLengthExam
 import com.example.data.model.McqQuestion
 import com.example.data.model.StudyNote
 import com.example.data.model.Subject
@@ -167,5 +168,17 @@ object SharedCatalogMergeHelper {
         personal.forEach { map[it.id] = it }
         shared.filter { it.published }.forEach { m -> map[m.id] = m.copy(isShared = true) }
         return map.values.sortedBy { it.createdAt?.seconds ?: 0L }
+    }
+
+    fun mergeFullLengthExams(
+        builtIn: List<FullLengthExam>,
+        personal: List<FullLengthExam>,
+        shared: List<FullLengthExam>,
+    ): List<FullLengthExam> {
+        val map = LinkedHashMap<String, FullLengthExam>()
+        builtIn.forEach { map[it.id] = it }
+        personal.forEach { map[it.id] = it }
+        shared.filter { it.published }.forEach { e -> map[e.id] = e.copy(isShared = true) }
+        return map.values.toList()
     }
 }

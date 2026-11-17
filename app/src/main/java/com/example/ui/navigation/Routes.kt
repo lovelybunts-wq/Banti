@@ -63,3 +63,10 @@ data object RevisionPlannerRoute
 
 @Serializable
 data object SettingsRoute
+
+@Serializable
+data object FullLengthExamsRoute
+
+@Serializable
+data class FullLengthExamTestsRoute(val examId: String)
+

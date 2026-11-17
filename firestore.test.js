@@ -451,5 +451,71 @@ test("Shared catalog, student summaries, whatsappRequests, personalNotes, pdfAnn
       updatedAt: new Date(Date.now() - 1000),
     })
   );
+
+  // FullLengthExams: user-owned custom exam + admin shared exam
+  await assertSucceeds(
+    aliceDb.doc(`users/${ALICE_UID}/fullLengthExams/fl_exam_custom_1`).set({
+      userId: ALICE_UID,
+      name: "MPPSC Mains Mock Series",
+      subtitle: "Full Length Papers",
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+  await assertSucceeds(
+    aliceDb.doc(`users/${ALICE_UID}/fullLengthExams/fl_exam_custom_1`).update({
+      name: "MPPSC Mains Mock Series Updated",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertFails(bobDb.doc(`users/${ALICE_UID}/fullLengthExams/fl_exam_custom_1`).get());
+  await assertFails(
+    aliceDb.doc(`users/${ALICE_UID}/fullLengthExams/fl_exam_bad`).set({
+      userId: ALICE_UID,
+      name: "Bad",
+      extraGhost: true,
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+
+  // Full length HTML test note linked under full_length_exam
+  await assertSucceeds(
+    aliceDb.doc(`users/${ALICE_UID}/notes/fl_note_1`).set({
+      userId: ALICE_UID,
+      subjectId: "full_length_exam",
+      topicId: "exam_mppsc_prelims",
+      subtopicId: "full_length_html",
+      folderName: "MPPSC Prelims",
+      title: "Full Length Test #1",
+      noteType: "HTML",
+      localFileName: "fl_test_1.html",
+      htmlContent: "<html><body><h1>Full Length</h1></body></html>",
+      isMockTest: true,
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+
+  // Admin sharedFullLengthExams
+  await assertFails(
+    aliceDb.doc("sharedFullLengthExams/shared_fl_1").set({
+      userId: ALICE_UID,
+      name: "Student Unauthorized Exam",
+      published: true,
+      updatedAt: past,
+    })
+  );
+  await assertSucceeds(
+    adminDb.doc("sharedFullLengthExams/shared_fl_1").set({
+      userId: "admin_uid",
+      name: "UPSC Full Length Series",
+      subtitle: "2026 Prelims Mock Tests",
+      published: true,
+      updatedAt: past,
+    })
+  );
+  await assertSucceeds(aliceDb.doc("sharedFullLengthExams/shared_fl_1").get());
 });
+
 

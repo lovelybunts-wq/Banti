@@ -6,6 +6,7 @@ import com.example.data.local.OfflineVaultSnapshot
 import com.example.data.model.BookmarkItem
 import com.example.data.model.CloudPdfAnnotationDoc
 import com.example.data.model.DefaultSubjectsSeed
+import com.example.data.model.FullLengthExam
 import com.example.data.model.McqQuestion
 import com.example.data.model.NoteType
 import com.example.data.model.PersonalNote
@@ -157,6 +158,10 @@ class StudyRepository(
     fun observeBookmarks(uid: String): Flow<List<BookmarkItem>> =
         observeCollection(uid, "bookmarks", BookmarkItem::class.java)
             .map { list -> list.sortedByDescending { it.createdAtMillis } }
+
+    fun observeFullLengthExams(uid: String): Flow<List<FullLengthExam>> =
+        observeCollection(uid, "fullLengthExams", FullLengthExam::class.java)
+            .map { list -> list.sortedBy { it.createdAt?.seconds ?: 0L } }
 
     suspend fun ensureUserProfile(
         uid: String,
@@ -334,6 +339,44 @@ class StudyRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun addFullLengthExam(uid: String, name: String, subtitle: String?): Result<String> {
+        val docId = "fl_exam_${newValidId()}"
+        val path = "users/$uid/fullLengthExams/$docId"
+        return try {
+            requireUserId(uid)
+            val safeName = name.trim().take(120)
+            require(safeName.isNotEmpty()) { "Exam name cannot be empty." }
+            val payload = mapOf(
+                "userId" to uid,
+                "name" to safeName,
+                "subtitle" to subtitle?.trim()?.takeIf { it.isNotEmpty() }?.take(200),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp(),
+            ).filterValues { it != null } as Map<String, Any>
+            userDoc(uid).collection("fullLengthExams").document(docId).set(payload).await()
+            Result.success(docId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteFullLengthExam(uid: String, examId: String): Result<Unit> {
+        val path = "users/$uid/fullLengthExams/$examId"
+        return try {
+            requireUserId(uid)
+            userDoc(uid).collection("fullLengthExams").document(examId).delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
             Result.failure(e)
         }
     }

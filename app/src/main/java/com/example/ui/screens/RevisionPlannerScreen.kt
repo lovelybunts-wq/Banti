@@ -85,7 +85,6 @@ import com.example.ui.components.Tactile3DBadge
 import com.example.ui.components.Tactile3DCard
 import com.example.ui.components.TactileIconOrb
 import com.example.ui.theme.LocalStudyTheme
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -98,7 +97,6 @@ fun RevisionPlannerScreen(
     subjectsState: UiState<List<Subject>>,
     profileState: UiState<UserProfile?>,
     localSettings: LocalAppSettings,
-    customLogoFile: File?,
     onAddStudyPlanItem: (dateKey: String, entryType: String, title: String, subjectName: String?, notes: String?) -> Unit,
     onToggleCompleted: (StudyLog) -> Unit,
     onDeleteLog: (String) -> Unit,
@@ -199,7 +197,7 @@ fun RevisionPlannerScreen(
             ) {
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        LearnTalentLogo(customLogoFile = customLogoFile, size = 38.dp, cornerRadius = 10.dp)
+                        LearnTalentLogo(customLogoFile = null, size = 38.dp, cornerRadius = 10.dp)
                         Spacer(Modifier.width(10.dp))
                         Column {
                             Text(

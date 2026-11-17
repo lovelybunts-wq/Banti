@@ -2,6 +2,7 @@ package com.example.data.remote
 
 import android.content.Context
 import com.example.R
+import com.example.data.model.FullLengthExam
 import com.example.data.model.McqQuestion
 import com.example.data.model.NoteType
 import com.example.data.model.StudentSummary
@@ -91,6 +92,13 @@ class SharedCatalogRepository(
 
     fun observeSharedMcqs(includeUnpublished: Boolean): Flow<List<McqQuestion>> =
         observeShared("sharedMcqs", McqQuestion::class.java).map { list ->
+            list.filter { includeUnpublished || it.published }
+                .map { it.copy(isShared = true) }
+                .sortedBy { it.createdAt?.seconds ?: 0L }
+        }
+
+    fun observeSharedFullLengthExams(includeUnpublished: Boolean): Flow<List<FullLengthExam>> =
+        observeShared("sharedFullLengthExams", FullLengthExam::class.java).map { list ->
             list.filter { includeUnpublished || it.published }
                 .map { it.copy(isShared = true) }
                 .sortedBy { it.createdAt?.seconds ?: 0L }
@@ -275,6 +283,26 @@ class SharedCatalogRepository(
 
     suspend fun deleteSharedMcq(mcqId: String): Result<Unit> = runCatching {
         db.collection("sharedMcqs").document(mcqId).delete().await()
+    }
+
+    suspend fun upsertSharedFullLengthExam(exam: FullLengthExam): Result<String> = runCatching {
+        val docId = exam.id.ifBlank { "shared_fl_${StudyRepository.newValidId()}" }
+        db.collection("sharedFullLengthExams").document(docId).set(
+            mapOf(
+                "userId" to (auth.currentUser?.uid ?: "admin"),
+                "name" to exam.name.trim().take(120),
+                "subtitle" to exam.subtitle?.trim()?.takeIf { it.isNotEmpty() }?.take(200),
+                "isShared" to true,
+                "published" to exam.published,
+                "updatedAt" to FieldValue.serverTimestamp(),
+            ).filterValues { it != null },
+            SetOptions.merge()
+        ).await()
+        docId
+    }
+
+    suspend fun deleteSharedFullLengthExam(examId: String): Result<Unit> = runCatching {
+        db.collection("sharedFullLengthExams").document(examId).delete().await()
     }
 
     suspend fun upsertStudentSummary(
