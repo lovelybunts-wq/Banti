@@ -315,3 +315,141 @@ test("Security bounds: reject cross-user access, ghost fields, @DocumentId 'id' 
     })
   );
 });
+
+test("Shared catalog, student summaries, whatsappRequests, personalNotes, pdfAnnotations & bookmarks RBAC", async () => {
+  const adminDb = testEnv.authenticatedContext("admin_uid", { email: "lovely.bunts@gmail.com" }).firestore();
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID, { email: "student1@gmail.com" }).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID, { email: "student2@gmail.com" }).firestore();
+  const past = new Date(Date.now() - 10000);
+
+  // Admin uploads shared content; non-admin students cannot write shared catalog
+  await assertFails(
+    aliceDb.doc("sharedSubjects/shared_subj_1").set({
+      userId: ALICE_UID,
+      nameEn: "Computer",
+      published: true,
+      updatedAt: past,
+    })
+  );
+
+  await assertSucceeds(
+    adminDb.doc("sharedSubjects/shared_subj_1").set({
+      userId: "admin_uid",
+      nameEn: "Computer",
+      published: true,
+      updatedAt: past,
+    })
+  );
+
+  await assertSucceeds(
+    adminDb.doc("sharedContent/shared_doc_1").set({
+      userId: "admin_uid",
+      subjectId: "subj_computer",
+      topicId: "topic_7_0",
+      subtopicId: "sub_7_0_0",
+      folderName: "Notes",
+      title: "Computer Basics PDF",
+      noteType: "PDF",
+      version: 1,
+      published: true,
+      downloadsCount: 0,
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+
+  // Students can read published sharedContent & increment downloadsCount by +1 only
+  await assertSucceeds(aliceDb.doc("sharedContent/shared_doc_1").get());
+  await assertSucceeds(
+    aliceDb.doc("sharedContent/shared_doc_1").update({
+      downloadsCount: 1,
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertFails(
+    aliceDb.doc("sharedContent/shared_doc_1").update({
+      title: "Tampered",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  // Student personalNotes, pdfAnnotations & bookmarks isolated by UID
+  await assertSucceeds(
+    aliceDb.doc(`users/${ALICE_UID}/personalNotes/pnote_1`).set({
+      userId: ALICE_UID,
+      subjectId: "subj_polity",
+      subjectName: "Polity",
+      topicName: "Articles",
+      title: "Right to Equality",
+      contentSummary: "Art 14-18",
+      blocksJson: "[]",
+      updatedAtMillis: Date.now(),
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+  await assertFails(bobDb.doc(`users/${ALICE_UID}/personalNotes/pnote_1`).get());
+
+  await assertSucceeds(
+    aliceDb.doc(`users/${ALICE_UID}/pdfAnnotations/shared_doc_1`).set({
+      userId: ALICE_UID,
+      noteId: "shared_doc_1",
+      annotationsJson: "{}",
+      updatedAtMillis: Date.now(),
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+  await assertFails(bobDb.doc(`users/${ALICE_UID}/pdfAnnotations/shared_doc_1`).get());
+
+  await assertSucceeds(
+    aliceDb.doc(`users/${ALICE_UID}/bookmarks/bmk_1`).set({
+      userId: ALICE_UID,
+      bookmarkType: "FAVORITE_NOTE",
+      title: "Computer Basics PDF",
+      refId: "shared_doc_1",
+      createdAtMillis: Date.now(),
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+  await assertFails(bobDb.doc(`users/${ALICE_UID}/bookmarks/bmk_1`).get());
+
+  // Student summary + Admin viewing student testResults
+  await assertSucceeds(
+    aliceDb.doc(`studentSummaries/${ALICE_UID}`).set({
+      userId: ALICE_UID,
+      displayName: "Aarav",
+      email: "student1@gmail.com",
+      downloadsCount: 1,
+      testAttemptsCount: 2,
+      averageScorePct: 85.0,
+      lastActiveMillis: Date.now(),
+      updatedAt: past,
+    })
+  );
+  await assertFails(bobDb.collection("studentSummaries").get());
+  await assertSucceeds(adminDb.collection("studentSummaries").get());
+
+  // WhatsApp request tracking: student creates, admin reads & updates status
+  await assertSucceeds(
+    aliceDb.doc("whatsappRequests/req_1").set({
+      userId: ALICE_UID,
+      studentName: "Aarav",
+      requestType: "Notes Request",
+      subject: "MP GK",
+      status: "PENDING",
+      createdAt: past,
+      updatedAt: past,
+    })
+  );
+  await assertFails(bobDb.collection("whatsappRequests").get());
+  await assertSucceeds(adminDb.collection("whatsappRequests").get());
+  await assertSucceeds(
+    adminDb.doc("whatsappRequests/req_1").update({
+      status: "FULFILLED",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+});
+

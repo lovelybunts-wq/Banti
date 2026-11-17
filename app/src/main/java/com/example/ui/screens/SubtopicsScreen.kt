@@ -72,23 +72,22 @@ fun SubtopicsScreen(
     notes: List<StudyNote>,
     videos: List<VideoLink>,
     mcqs: List<McqQuestion>,
+    isAdminUser: Boolean = false,
     onBack: () -> Unit,
     onSubtopicClick: (Subtopic) -> Unit,
     onAddSubtopic: (String) -> Unit,
-    onDeleteSubtopic: (String) -> Unit,
+    onDeleteSubtopic: (Subtopic) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
     val accent = subject?.let { SubjectVisuals.colorFor(it.colorHex, theme.primary) } ?: theme.primary
     var showAddDialog by remember { mutableStateOf(false) }
+    var pendingDeleteSubtopic by remember { mutableStateOf<Subtopic?>(null) }
 
     Scaffold(
         containerColor = theme.background,
         topBar = {
             TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = theme.background,
-                    titleContentColor = theme.onBackground
-                ),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = theme.background, titleContentColor = theme.onBackground),
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.testTag("subtopics_back_btn")) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
@@ -96,16 +95,8 @@ fun SubtopicsScreen(
                 },
                 title = {
                     Column {
-                        Text(
-                            text = topic?.name ?: "Sub-topics",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = accent
-                        )
-                        Text(
-                            text = "${subject?.nameEn ?: ""} • Sub-topics",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = theme.onSurfaceVariant
-                        )
+                        Text(topic?.name ?: "Sub-topics", style = MaterialTheme.typography.titleLarge, color = accent)
+                        Text("${subject?.nameEn ?: ""} • Sub-topics", style = MaterialTheme.typography.bodySmall, color = theme.onSurfaceVariant)
                     }
                 }
             )
@@ -124,114 +115,70 @@ fun SubtopicsScreen(
     ) { innerPadding ->
         if (subtopics.isEmpty()) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .padding(24.dp),
+                modifier = Modifier.fillMaxSize().padding(innerPadding).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.img_empty_notes),
                     contentDescription = "Empty subtopics",
-                    modifier = Modifier
-                        .size(180.dp)
-                        .clip(RoundedCornerShape(20.dp)),
+                    modifier = Modifier.size(180.dp).clip(RoundedCornerShape(20.dp)),
                     contentScale = ContentScale.Crop
                 )
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "कोई सब-टॉपिक नहीं है",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = theme.onSurface
-                )
-                Text(
-                    text = "नोट्स, वीडियो और टेस्ट के लिए सब-टॉपिक बनाएं",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = theme.onSurfaceVariant
-                )
+                Text("कोई सब-टॉपिक नहीं है", style = MaterialTheme.typography.titleMedium, color = theme.onSurface)
+                Text("नोट्स, वीडियो और टेस्ट के लिए सब-टॉपिक बनाएं", style = MaterialTheme.typography.bodySmall, color = theme.onSurfaceVariant)
             }
         } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.TopCenter
-            ) {
+            Box(modifier = Modifier.fillMaxSize().padding(innerPadding), contentAlignment = Alignment.TopCenter) {
                 LazyColumn(
-                    modifier = Modifier
-                        .widthIn(max = 920.dp)
-                        .fillMaxSize(),
+                    modifier = Modifier.widthIn(max = 920.dp).fillMaxSize(),
                     contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 90.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                items(subtopics, key = { it.id }) { subtopic ->
-                    val nCount = notes.count { it.subtopicId == subtopic.id }
-                    val vCount = videos.count { it.subtopicId == subtopic.id }
-                    val mCount = mcqs.count { it.subtopicId == subtopic.id }
+                    items(subtopics, key = { it.id }) { subtopic ->
+                        val nCount = notes.count { it.subtopicId == subtopic.id }
+                        val vCount = videos.count { it.subtopicId == subtopic.id }
+                        val mCount = mcqs.count { it.subtopicId == subtopic.id }
+                        val canDelete = !subtopic.isShared || isAdminUser
 
-                    Tactile3DCard(
-                        modifier = Modifier.fillMaxWidth(),
-                        accentColor = accent,
-                        onClick = { onSubtopicClick(subtopic) },
-                        testTag = "subtopic_card_${subtopic.id}"
-                    ) {
-                        Row(
+                        Tactile3DCard(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                            accentColor = accent,
+                            onClick = { onSubtopicClick(subtopic) },
+                            testTag = "subtopic_card_${subtopic.id}"
                         ) {
-                            TactileIconOrb(
-                                icon = Icons.Rounded.Bookmarks,
-                                tint = accent,
-                                size = 44.dp
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = subtopic.name,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = theme.onSurface
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Tactile3DBadge(text = "$nCount Notes", color = accent)
-                                    Tactile3DBadge(text = "$vCount Videos", color = theme.secondary)
-                                    Tactile3DBadge(text = "$mCount MCQs", color = theme.tertiary)
-                                }
-                                if (!subtopic.lastStudiedDate.isNullOrBlank()) {
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                TactileIconOrb(icon = Icons.Rounded.Bookmarks, tint = accent, size = 44.dp)
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(subtopic.name, style = MaterialTheme.typography.titleMedium, color = theme.onSurface)
                                     Spacer(Modifier.height(6.dp))
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            Icons.Rounded.CheckCircle,
-                                            contentDescription = null,
-                                            tint = theme.success,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(
-                                            text = "Studied: ${subtopic.lastStudiedDate}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = theme.success
-                                        )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Tactile3DBadge(text = "$nCount Notes", color = accent)
+                                        Tactile3DBadge(text = "$vCount Videos", color = theme.secondary)
+                                        Tactile3DBadge(text = "$mCount MCQs", color = theme.tertiary)
+                                        if (subtopic.isShared) Tactile3DBadge(text = "Shared", color = theme.primary)
+                                    }
+                                    if (!subtopic.lastStudiedDate.isNullOrBlank()) {
+                                        Spacer(Modifier.height(6.dp))
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = theme.success, modifier = Modifier.size(14.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Studied: ${subtopic.lastStudiedDate}", style = MaterialTheme.typography.labelSmall, color = theme.success)
+                                        }
                                     }
                                 }
+                                if (canDelete) {
+                                    IconButton(onClick = { pendingDeleteSubtopic = subtopic }) {
+                                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "Delete sub-topic", tint = theme.onSurfaceVariant)
+                                    }
+                                }
+                                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = accent)
                             }
-                            IconButton(onClick = { onDeleteSubtopic(subtopic.id) }) {
-                                Icon(
-                                    Icons.Rounded.DeleteOutline,
-                                    contentDescription = "Delete sub-topic",
-                                    tint = theme.onSurfaceVariant
-                                )
-                            }
-                            Icon(
-                                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = accent
-                            )
                         }
                     }
                 }
-            }
             }
         }
     }
@@ -243,13 +190,7 @@ fun SubtopicsScreen(
             containerColor = theme.surfaceElevated,
             title = { Text("नया सब-टॉपिक जोड़ें (Add Sub-topic)", color = theme.onSurface) },
             text = {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Sub-topic Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("new_subtopic_name_input")
-                )
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Sub-topic Name") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("new_subtopic_name_input"))
             },
             confirmButton = {
                 Button(
@@ -263,9 +204,27 @@ fun SubtopicsScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = theme.onPrimary)
                 ) { Text("Add") }
             },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { showAddDialog = false }) { Text("Cancel") } }
+        )
+    }
+
+    val delSub = pendingDeleteSubtopic
+    if (delSub != null) {
+        AlertDialog(
+            onDismissRequest = { pendingDeleteSubtopic = null },
+            containerColor = theme.surfaceElevated,
+            title = { Text("सब-टॉपिक डिलीट करें?", color = theme.onSurface) },
+            text = { Text("क्या आप '${delSub.name}' को हटाना चाहते हैं?", color = theme.onSurfaceVariant) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteSubtopic(delSub)
+                        pendingDeleteSubtopic = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.error, contentColor = theme.onPrimary)
+                ) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDeleteSubtopic = null }) { Text("Cancel") } }
         )
     }
 }

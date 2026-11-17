@@ -2,11 +2,18 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,6 +44,7 @@ import java.io.File
 fun ImageViewerScreen(
     note: StudyNote?,
     imageFile: File?,
+    onDownloadSharedImage: (() -> Unit)? = null,
     onBack: () -> Unit,
 ) {
     val theme = LocalStudyTheme.current
@@ -69,11 +77,26 @@ fun ImageViewerScreen(
             contentAlignment = Alignment.Center
         ) {
             if (imageFile == null || !imageFile.exists()) {
-                Text(
-                    text = "Image file is stored locally on the upload device.",
-                    color = theme.onSurfaceVariant,
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(24.dp)
-                )
+                ) {
+                    Text(
+                        text = if (onDownloadSharedImage != null) "यह इमेज ऑफलाइन डाउनलोड नहीं है।" else "Image file is stored locally on the upload device.",
+                        color = Color.White
+                    )
+                    if (onDownloadSharedImage != null) {
+                        Button(
+                            onClick = onDownloadSharedImage,
+                            colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = theme.onPrimary)
+                        ) {
+                            Icon(Icons.Rounded.Download, contentDescription = null)
+                            Spacer(Modifier.widthIn(min = 6.dp))
+                            Text("Download Image")
+                        }
+                    }
+                }
             } else {
                 AsyncImage(
                     model = imageFile,

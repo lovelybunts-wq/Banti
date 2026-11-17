@@ -13,22 +13,33 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.DoneAll
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -36,27 +47,43 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.example.R
+import com.example.data.model.InProgressTestAttempt
+import com.example.data.model.QuestionAttemptRecord
 import com.example.data.model.StudyNote
+import com.example.ui.MainViewModel
 import com.example.ui.theme.LocalStudyTheme
+import kotlinx.coroutines.delay
 
-private class HtmlScoreBridge(
+private class HtmlCbtBridge(
     private val onScoreDetected: (obtained: Double, total: Double, summary: String) -> Unit,
+    private val onSnapshotJson: (String) -> Unit,
+    private val onHtmlSubmitClick: () -> Unit,
 ) {
     @JavascriptInterface
     fun submitScore(obtained: Double, total: Double, summary: String?) {
         onScoreDetected(obtained, total, summary ?: "")
+    }
+
+    @JavascriptInterface
+    fun onQuizSnapshot(jsonStr: String) {
+        onSnapshotJson(jsonStr)
+    }
+
+    @JavascriptInterface
+    fun onHtmlSubmitTriggered() {
+        onHtmlSubmitClick()
     }
 }
 
@@ -65,17 +92,41 @@ private class HtmlScoreBridge(
 @Composable
 fun HtmlTestScreen(
     note: StudyNote?,
+    subjectId: String,
+    topicId: String,
+    subtopicId: String,
     isTestMode: Boolean,
+    existingDraft: InProgressTestAttempt? = null,
     loadHtml: suspend (StudyNote) -> String?,
+    onSaveDraft: (InProgressTestAttempt) -> Unit = {},
     onBack: () -> Unit,
-    onScoreSubmitted: (obtained: Double, total: Double, summary: String) -> Unit,
+    onSubmitFinalResult: (
+        obtained: Double,
+        total: Double,
+        totalQ: Int,
+        attempted: Int,
+        correct: Int,
+        wrong: Int,
+        unattempted: Int,
+        durationSeconds: Long,
+        testMode: String,
+        breakdown: List<QuestionAttemptRecord>,
+    ) -> Unit,
 ) {
     val theme = LocalStudyTheme.current
     var htmlContent by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
-    var showManualDialog by remember { mutableStateOf(false) }
+
+    var showModeDialog by remember(note?.id) { mutableStateOf(isTestMode) }
+    var selectedMode by remember { mutableStateOf(existingDraft?.testMode ?: "EXAM") }
+    var elapsedSeconds by remember { mutableLongStateOf(existingDraft?.elapsedSeconds ?: 0L) }
+    var readerTheme by remember { mutableStateOf(HtmlReaderTheme.DEFAULT) }
+    var isFullscreen by remember { mutableStateOf(false) }
+    var showThemeMenu by remember { mutableStateOf(false) }
+
     var detectedScore by remember { mutableStateOf<Pair<Double, Double>?>(null) }
-    var detectedSummary by remember { mutableStateOf<String?>(null) }
+    var latestPayload by remember { mutableStateOf<DomQuizExtractionPayload?>(null) }
+    var showSubmitConfirmDialog by remember { mutableStateOf(false) }
     var jsAlertMessage by remember { mutableStateOf<String?>(null) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
@@ -85,104 +136,124 @@ fun HtmlTestScreen(
         isLoading = false
     }
 
+    LaunchedEffect(showModeDialog, showSubmitConfirmDialog, isLoading) {
+        if (!showModeDialog && !showSubmitConfirmDialog && !isLoading && isTestMode) {
+            while (true) {
+                delay(1000L)
+                elapsedSeconds += 1L
+                if (elapsedSeconds % 15L == 0L && note != null) {
+                    onSaveDraft(
+                        InProgressTestAttempt(
+                            noteId = note.id, testTitle = note.title, subjectId = subjectId,
+                            topicId = topicId, subtopicId = subtopicId, testMode = selectedMode,
+                            elapsedSeconds = elapsedSeconds, savedAtMillis = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(readerTheme, webViewRef) {
+        webViewRef?.evaluateJavascript(HtmlTestJsHelper.buildThemeCssJs(readerTheme), null)
+    }
+
+    LaunchedEffect(selectedMode, showModeDialog, webViewRef) {
+        if (!showModeDialog && isTestMode) {
+            webViewRef?.evaluateJavascript(HtmlTestJsHelper.buildPracticeHighlightJs(selectedMode == "PRACTICE"), null)
+        }
+    }
+
+    fun persistDraftAndExit() {
+        if (note != null && isTestMode && elapsedSeconds > 2L) {
+            onSaveDraft(
+                InProgressTestAttempt(
+                    noteId = note.id, testTitle = note.title, subjectId = subjectId,
+                    topicId = topicId, subtopicId = subtopicId, testMode = selectedMode,
+                    elapsedSeconds = elapsedSeconds, savedAtMillis = System.currentTimeMillis()
+                )
+            )
+        }
+        onBack()
+    }
+
     BackHandler {
         val wv = webViewRef
-        if (wv != null && wv.canGoBack()) {
-            wv.goBack()
-        } else {
-            onBack()
-        }
+        if (wv != null && wv.canGoBack()) wv.goBack() else persistDraftAndExit()
     }
 
     Scaffold(
         containerColor = theme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = theme.background,
-                    titleContentColor = theme.onBackground
-                ),
-                navigationIcon = {
-                    IconButton(
-                        onClick = {
-                            val wv = webViewRef
-                            if (wv != null && wv.canGoBack()) wv.goBack() else onBack()
-                        },
-                        modifier = Modifier.testTag("html_viewer_back_btn")
-                    ) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                title = {
-                    Column {
-                        Text(
-                            text = note?.title ?: "HTML Viewer",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = theme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        val det = detectedScore
-                        if (det != null) {
-                            Text(
-                                text = "Detected: ${formatScore(det.first)} / ${formatScore(det.second)} • ऊपर बटन से सेव करें",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.success,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+            if (!isFullscreen) {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = theme.background, titleContentColor = theme.onBackground),
+                    navigationIcon = {
+                        IconButton(onClick = { persistDraftAndExit() }, modifier = Modifier.testTag("html_viewer_back_btn")) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    title = {
+                        Column {
+                            Text(note?.title ?: "HTML CBT Test", style = MaterialTheme.typography.titleMedium, color = theme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (isTestMode) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Rounded.Timer, contentDescription = null, tint = theme.secondary, modifier = Modifier.size(14.dp))
+                                        Spacer(Modifier.width(3.dp))
+                                        Text(formatDuration(elapsedSeconds), style = MaterialTheme.typography.labelSmall, color = theme.secondary, fontWeight = FontWeight.Bold)
+                                    }
+                                    Text(selectedMode, style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                                }
+                            }
+                        }
+                    },
+                    actions = {
+                        Box {
+                            IconButton(onClick = { showThemeMenu = true }) {
+                                Icon(Icons.Rounded.Palette, contentDescription = "Reader theme", tint = theme.onSurfaceVariant)
+                            }
+                            DropdownMenu(expanded = showThemeMenu, onDismissRequest = { showThemeMenu = false }) {
+                                HtmlReaderTheme.entries.forEach { t ->
+                                    DropdownMenuItem(text = { Text(t.label) }, onClick = { readerTheme = t; showThemeMenu = false })
+                                }
+                            }
+                        }
+                        IconButton(onClick = { isFullscreen = true }) {
+                            Icon(Icons.Rounded.Fullscreen, contentDescription = "Fullscreen")
+                        }
+                        if (isTestMode) {
+                            Button(
+                                onClick = {
+                                    webViewRef?.evaluateJavascript("window.__ltExtractQuizSnapshot && window.__ltExtractQuizSnapshot();", null)
+                                    showSubmitConfirmDialog = true
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = theme.onPrimary),
+                                modifier = Modifier.padding(end = 6.dp).testTag("finish_html_test_btn")
+                            ) {
+                                Icon(Icons.Rounded.DoneAll, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp)); Text("Submit")
+                            }
                         }
                     }
-                },
-                actions = {
-                    if (isTestMode) {
-                        Button(
-                            onClick = { showManualDialog = true },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = theme.primary,
-                                contentColor = theme.onPrimary
-                            ),
-                            modifier = Modifier
-                                .padding(end = 8.dp)
-                                .testTag("finish_html_test_btn")
-                        ) {
-                            Icon(Icons.Rounded.DoneAll, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text(stringResource(R.string.finish_and_save_score))
-                        }
-                    }
-                }
-            )
+                )
+            }
         }
     ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             when {
-                isLoading -> {
-                    CircularProgressIndicator(
-                        color = theme.primary,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
-                }
-                htmlContent.isNullOrBlank() -> {
-                    Text(
-                        text = "HTML फाइल इस डिवाइस पर उपलब्ध नहीं है। कृपया दोबारा अपलोड करें या Google Drive से रिस्टोर करें।",
-                        color = theme.onSurfaceVariant,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(24.dp)
-                    )
-                }
+                isLoading -> CircularProgressIndicator(color = theme.primary, modifier = Modifier.align(Alignment.Center))
+                htmlContent.isNullOrBlank() -> Text(
+                    text = "HTML फाइल इस डिवाइस पर उपलब्ध नहीं है। कृपया ऑनलाइन डाउनलोड करें या Google Drive से रिस्टोर करें।",
+                    color = theme.onSurfaceVariant, modifier = Modifier.align(Alignment.Center).padding(24.dp)
+                )
                 else -> {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
                             WebView(ctx).apply {
                                 webViewRef = this
-                                settings.javaScriptEnabled = isTestMode
+                                settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
                                 settings.useWideViewPort = true
                                 settings.loadWithOverviewMode = true
@@ -192,33 +263,35 @@ fun HtmlTestScreen(
                                 settings.defaultTextEncodingName = "UTF-8"
                                 if (isTestMode) {
                                     addJavascriptInterface(
-                                        HtmlScoreBridge { obtained, total, summary ->
-                                            post {
-                                                // Record score passively WITHOUT closing the HTML test
-                                                // so the user can review all correct/wrong answers!
-                                                detectedScore = obtained to total
-                                                detectedSummary = summary.ifBlank { "Score: ${formatScore(obtained)} / ${formatScore(total)}" }
+                                        HtmlCbtBridge(
+                                            onScoreDetected = { obtained, total, _ ->
+                                                post { detectedScore = obtained to total }
+                                            },
+                                            onSnapshotJson = { raw ->
+                                                post {
+                                                    HtmlTestJsHelper.parseDomPayload(raw)?.let { p ->
+                                                        latestPayload = p
+                                                        if (p.scoreObtained != null && p.totalMarks != null) {
+                                                            detectedScore = p.scoreObtained to p.totalMarks
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            onHtmlSubmitClick = {
+                                                post {
+                                                    // NEVER auto-exit on HTML submit: ask user confirmation to view rich Result Screen!
+                                                    showSubmitConfirmDialog = true
+                                                }
                                             }
-                                        },
+                                        ),
                                         "LearnTalentBridge"
                                     )
                                 }
                                 webChromeClient = object : WebChromeClient() {
-                                    override fun onJsAlert(
-                                        view: WebView?,
-                                        url: String?,
-                                        message: String?,
-                                        result: JsResult?
-                                    ): Boolean {
+                                    override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                                         if (!message.isNullOrBlank()) {
                                             jsAlertMessage = message
-                                            if (isTestMode) {
-                                                val parsed = tryParseScore(message)
-                                                if (parsed != null) {
-                                                    detectedScore = parsed
-                                                    detectedSummary = message
-                                                }
-                                            }
+                                            if (isTestMode) tryParseScore(message)?.let { detectedScore = it }
                                         }
                                         result?.confirm()
                                         return true
@@ -227,144 +300,112 @@ fun HtmlTestScreen(
                                 webViewClient = object : WebViewClient() {
                                     override fun onPageFinished(view: WebView?, url: String?) {
                                         super.onPageFinished(view, url)
-                                        if (isTestMode) {
-                                            view?.evaluateJavascript(INJECTED_OBSERVER_JS, null)
-                                        }
+                                        if (isTestMode) view?.evaluateJavascript(HtmlTestJsHelper.INJECTED_CBT_OBSERVER_JS, null)
+                                        view?.evaluateJavascript(HtmlTestJsHelper.buildThemeCssJs(readerTheme), null)
+                                        if (selectedMode == "PRACTICE") view?.evaluateJavascript(HtmlTestJsHelper.buildPracticeHighlightJs(true), null)
                                     }
                                 }
-                                loadDataWithBaseURL(
-                                    "https://localhost/",
-                                    htmlContent ?: "",
-                                    "text/html",
-                                    "UTF-8",
-                                    null
-                                )
+                                loadDataWithBaseURL("https://localhost/", htmlContent ?: "", "text/html", "UTF-8", null)
                             }
                         }
                     )
                 }
             }
-        }
-    }
-
-    if (jsAlertMessage != null) {
-        AlertDialog(
-            onDismissRequest = { jsAlertMessage = null },
-            containerColor = theme.surfaceElevated,
-            title = { Text("Test Message", color = theme.onSurface) },
-            text = { Text(jsAlertMessage ?: "", color = theme.onSurfaceVariant) },
-            confirmButton = {
-                TextButton(onClick = { jsAlertMessage = null }) { Text("OK", color = theme.primary) }
+            if (isFullscreen) {
+                Surface(color = theme.surfaceElevated.copy(alpha = 0.9f), shape = MaterialTheme.shapes.medium, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) {
+                    IconButton(onClick = { isFullscreen = false }) {
+                        Icon(Icons.Rounded.FullscreenExit, contentDescription = "Exit fullscreen", tint = theme.primary)
+                    }
+                }
             }
-        )
+        }
     }
 
-    if (showManualDialog) {
-        var obtainedText by remember(showManualDialog) {
-            mutableStateOf(detectedScore?.first?.let { formatScore(it) } ?: "")
-        }
-        var totalText by remember(showManualDialog) {
-            mutableStateOf(detectedScore?.second?.let { formatScore(it) } ?: "")
-        }
+    if (showModeDialog) {
         AlertDialog(
-            onDismissRequest = { showManualDialog = false },
+            onDismissRequest = { showModeDialog = false },
             containerColor = theme.surfaceElevated,
-            title = { Text("टेस्ट स्कोर सेव करें (Save Marks)", color = theme.onSurface) },
+            title = { Text("टेस्ट मोड चुनें (Select Mode)", color = theme.onSurface) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "HTML टेस्ट में दिखाई दिए अपने नंबर (Marks) दर्ज करें और सबमिट करें:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = theme.onSurfaceVariant
-                    )
+                    Text("Exam Mode में टाइमर चलेगा और अंत में स्कोर व सभी उत्तर मिलेंगे। Practice Mode में आप व्याख्या देख सकते हैं।", style = MaterialTheme.typography.bodySmall, color = theme.onSurfaceVariant)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = obtainedText,
-                            onValueChange = { obtainedText = it },
-                            label = { Text("Obtained") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            singleLine = true,
-                            modifier = Modifier.weight(1f).testTag("manual_score_obtained_input")
-                        )
-                        OutlinedTextField(
-                            value = totalText,
-                            onValueChange = { totalText = it },
-                            label = { Text("Total") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            singleLine = true,
-                            modifier = Modifier.weight(1f).testTag("manual_score_total_input")
-                        )
+                        FilterChip(selected = selectedMode == "EXAM", onClick = { selectedMode = "EXAM" }, label = { Text("Exam Mode") })
+                        FilterChip(selected = selectedMode == "PRACTICE", onClick = { selectedMode = "PRACTICE" }, label = { Text("Practice Mode") })
+                    }
+                    if (existingDraft != null) {
+                        OutlinedButton(onClick = { selectedMode = existingDraft.testMode; elapsedSeconds = existingDraft.elapsedSeconds; showModeDialog = false }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Resume Previous Attempt (${formatDuration(existingDraft.elapsedSeconds)})")
+                        }
                     }
                 }
             },
             confirmButton = {
-                val obtained = obtainedText.toDoubleOrNull()
-                val total = totalText.toDoubleOrNull()
+                Button(onClick = { showModeDialog = false }, colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = theme.onPrimary)) {
+                    Text("Start Test")
+                }
+            }
+        )
+    }
+
+    if (jsAlertMessage != null) {
+        AlertDialog(
+            onDismissRequest = { jsAlertMessage = null }, containerColor = theme.surfaceElevated,
+            title = { Text("Test Message", color = theme.onSurface) },
+            text = { Text(jsAlertMessage ?: "", color = theme.onSurfaceVariant) },
+            confirmButton = { TextButton(onClick = { jsAlertMessage = null }) { Text("OK", color = theme.primary) } }
+        )
+    }
+
+    if (showSubmitConfirmDialog) {
+        val computed = HtmlTestJsHelper.computeMetrics(latestPayload, detectedScore?.first, detectedScore?.second)
+        var obtainedText by remember(showSubmitConfirmDialog, computed.obtained) { mutableStateOf(MainViewModel.formatNum(computed.obtained)) }
+        var totalText by remember(showSubmitConfirmDialog, computed.total) { mutableStateOf(MainViewModel.formatNum(computed.total)) }
+
+        AlertDialog(
+            onDismissRequest = { showSubmitConfirmDialog = false },
+            containerColor = theme.surfaceElevated,
+            title = { Text("टेस्ट सबमिट करें? (Confirm Submit)", color = theme.onSurface) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Attempted: ${computed.attempted} / ${computed.totalQuestions} • Time: ${formatDuration(elapsedSeconds)}",
+                        style = MaterialTheme.typography.bodyMedium, color = theme.primary, fontWeight = FontWeight.SemiBold
+                    )
+                    Text("स्कोर जांचें (जरूरत हो तो संपादित करें) और पूरा रिजल्ट व व्याख्या देखने के लिए Confirm दबाएं:", style = MaterialTheme.typography.bodySmall, color = theme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = obtainedText, onValueChange = { obtainedText = it }, label = { Text("Score") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.weight(1f).testTag("manual_score_obtained_input"))
+                        OutlinedTextField(value = totalText, onValueChange = { totalText = it }, label = { Text("Total") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true, modifier = Modifier.weight(1f).testTag("manual_score_total_input"))
+                    }
+                }
+            },
+            confirmButton = {
+                val got = obtainedText.toDoubleOrNull() ?: computed.obtained
+                val tot = (totalText.toDoubleOrNull() ?: computed.total).coerceAtLeast(1.0)
                 Button(
                     onClick = {
-                        if (obtained != null && total != null && total > 0) {
-                            showManualDialog = false
-                            val summary = detectedSummary ?: "Score: ${formatScore(obtained)} / ${formatScore(total)}"
-                            onScoreSubmitted(obtained, total, summary)
-                        }
+                        showSubmitConfirmDialog = false
+                        onSubmitFinalResult(got, tot, computed.totalQuestions, computed.attempted, computed.correct, computed.wrong, computed.unattempted, elapsedSeconds, selectedMode, computed.breakdown)
                     },
-                    enabled = obtained != null && total != null && total > 0,
-                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = theme.onPrimary)
-                ) { Text("Save & Return") }
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.success, contentColor = theme.onPrimary),
+                    modifier = Modifier.testTag("confirm_submit_html_test_btn")
+                ) { Text("Confirm & View Result") }
             },
-            dismissButton = {
-                TextButton(onClick = { showManualDialog = false }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { showSubmitConfirmDialog = false }) { Text("Continue Test") } }
         )
     }
 }
 
-private fun formatScore(value: Double): String =
-    if (value % 1.0 == 0.0) value.toLong().toString() else String.format(java.util.Locale.US, "%.1f", value)
-
-private fun tryParseScore(text: String): Pair<Double, Double>? {
-    val explicit = Regex("""(?:score|marks|result|obtained|प्राप्तांक|अंक)\s*[:=\-]?\s*(\d+(?:\.\d+)?)\s*(?:/|out of)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
-        .find(text)
-    if (explicit != null) {
-        val got = explicit.groupValues[1].toDoubleOrNull()
-        val tot = explicit.groupValues[2].toDoubleOrNull()
-        if (got != null && tot != null && tot > 0.0 && got <= tot) return got to tot
-    }
-    return null
+private fun formatDuration(sec: Long): String {
+    val m = sec / 60L
+    val s = sec % 60L
+    return String.format("%02d:%02d", m, s)
 }
 
-private val INJECTED_OBSERVER_JS = """
-(function() {
-  if (window.__ltHooked) return;
-  window.__ltHooked = true;
-  function extractResultOnly() {
-    var bodyText = document.body ? document.body.innerText : '';
-    var m = bodyText.match(/(?:your\s*score|total\s*score|final\s*score|marks\s*obtained|result|प्राप्तांक|कुल\s*अंक)\s*[:=\-]?\s*(\d+(?:\.\d+)?)\s*(?:\/|out of)\s*(\d+(?:\.\d+)?)/i);
-    if (m) {
-      var got = parseFloat(m[1]);
-      var tot = parseFloat(m[2]);
-      if (!isNaN(got) && !isNaN(tot) && tot > 0 && got <= tot && window.LearnTalentBridge) {
-        window.LearnTalentBridge.submitScore(got, tot, m[0].trim());
-        return true;
-      }
-    }
-    return false;
-  }
-  document.addEventListener('submit', function() {
-    setTimeout(extractResultOnly, 600);
-  }, true);
-  document.addEventListener('click', function(e) {
-    var el = e.target;
-    while (el && el !== document.body) {
-      var txt = (el.innerText || el.value || '').toLowerCase();
-      if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button'))) {
-        if (txt.indexOf('submit test') !== -1 || txt.indexOf('finish test') !== -1 || txt.indexOf('final submit') !== -1 || txt.indexOf('सबमिट') !== -1) {
-          setTimeout(extractResultOnly, 600);
-          break;
-        }
-      }
-      el = el.parentElement;
-    }
-  }, true);
-})();
-""".trimIndent()
+private fun tryParseScore(text: String): Pair<Double, Double>? {
+    val explicit = Regex("""(?:score|marks|result|obtained|प्राप्तांक|अंक)\s*[:=\-]?\s*(\d+(?:\.\d+)?)\s*(?:/|out of)\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE).find(text)
+        ?: return null
+    val got = explicit.groupValues[1].toDoubleOrNull()
+    val tot = explicit.groupValues[2].toDoubleOrNull()
+    return if (got != null && tot != null && tot > 0.0 && got <= tot) got to tot else null
+}

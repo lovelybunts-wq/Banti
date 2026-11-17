@@ -14,9 +14,9 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun studyTheme_fromId_defaultsToMidnightTeal() {
+    fun studyTheme_fromId_defaultsToBuntsRoyalLight() {
         assertEquals(StudyThemeOption.FOREST_SAGE, StudyThemeOption.fromId("forest_sage"))
-        assertEquals(StudyThemeOption.MIDNIGHT_TEAL, StudyThemeOption.fromId(null))
+        assertEquals(StudyThemeOption.BUNTS_ROYAL_LIGHT, StudyThemeOption.fromId(null))
     }
 
     @Test

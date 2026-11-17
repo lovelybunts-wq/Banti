@@ -1,7 +1,8 @@
 <resources>
     <string name="app_name">Learn Talent</string>
-    <string name="brand_title">Learn Talent</string>
-    <string name="brand_subtitle">Smart Study Vault • Revision • Mock Tests</string>
+    <string name="brand_title">LEARN TALENT</string>
+    <string name="brand_byline">by Bunts</string>
+    <string name="brand_subtitle">by Bunts • Online &amp; Offline Study</string>
     <string name="nav_subjects">Subjects</string>
     <string name="nav_revision">Revision</string>
     <string name="nav_settings">Settings</string>
@@ -14,7 +15,7 @@
     <string name="biometric_prompt_title">Learn Talent Security</string>
     <string name="biometric_prompt_subtitle">Verify identity to access your study vault</string>
     <string name="biometric_lock_label">Biometric App Lock</string>
-    <string name="theme_selector_title">Eye-Friendly Dark Themes</string>
+    <string name="theme_selector_title">App Color Themes (Light &amp; Dark)</string>
     <string name="studied_yesterday_title">कल आपने क्या पढ़ा था (Studied Yesterday)</string>
     <string name="today_tomorrow_plan_title">आज और कल का प्लान (Today &amp; Tomorrow Plan)</string>
     <string name="exam_countdown_title">Exam Date &amp; Study Plan</string>
@@ -31,5 +32,5 @@
     <string name="add_mcq">Add Practice MCQ</string>
     <string name="start_mcq_practice">Start MCQ Practice</string>
     <string name="mark_studied_today">Mark Studied Today (आज पढ़ा)</string>
-    <string name="finish_and_save_score">Submit &amp; Save Score</string>
+    <string name="finish_and_save_score">Submit Test</string>
 </resources>

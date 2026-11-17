@@ -64,7 +64,7 @@ import com.example.auth.GoogleAuthHelper
 import com.example.data.remote.DriveAuthOutcome
 import com.example.data.remote.GoogleDriveBackupManager
 import com.example.data.remote.GoogleDriveProfile
-import com.example.ui.components.LearnTalentLogo
+import com.example.ui.components.LearnTalentBrandHeader
 import com.example.ui.components.Tactile3DCard
 import com.example.ui.components.TactileIconOrb
 import com.example.ui.theme.LocalStudyTheme
@@ -153,30 +153,10 @@ fun AuthScreen(
                 .padding(vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                LearnTalentLogo(
-                    customLogoFile = customLogoFile,
-                    size = 52.dp,
-                    cornerRadius = 14.dp
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    text = stringResource(R.string.brand_title),
-                    style = MaterialTheme.typography.displaySmall,
-                    color = theme.primary,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.testTag("auth_brand_title")
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = "सीमित सोर्स • बार-बार रिवीजन • स्मार्ट सिलेक्शन",
-                style = MaterialTheme.typography.bodyMedium,
-                color = theme.onSurfaceVariant,
-                textAlign = TextAlign.Center
+            LearnTalentBrandHeader(
+                customLogoFile = customLogoFile,
+                subtitle = "सीमित सोर्स • बार-बार रिवीजन • स्मार्ट सिलेक्शन",
+                logoSize = 52.dp
             )
 
             Spacer(Modifier.height(18.dp))

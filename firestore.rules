@@ -10,6 +10,10 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'lovely.bunts@gmail.com';
+    }
+
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
@@ -29,9 +33,12 @@ service cloud.firestore {
     function isValidUserProfile(data, userId) {
       return data.userId is string && data.userId == userId &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 600)) &&
+             (!('role' in data) || (data.role in ['student', 'admin'])) &&
              (!('examName' in data) || (data.examName is string && data.examName.size() <= 100)) &&
              (!('examDateMillis' in data) || (data.examDateMillis is int && data.examDateMillis >= 0)) &&
-             (!('themeId' in data) || (data.themeId in ['midnight_teal', 'forest_sage', 'indigo_velvet', 'warm_espresso'])) &&
+             (!('themeId' in data) || (data.themeId in ['bunts_royal_light', 'bunts_navy_dark', 'midnight_teal', 'forest_sage', 'indigo_velvet', 'warm_espresso'])) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
@@ -77,6 +84,7 @@ service cloud.firestore {
              (!('localFileName' in data) || (data.localFileName is string && data.localFileName.size() <= 200)) &&
              (!('htmlContent' in data) || (data.htmlContent is string && data.htmlContent.size() <= 200000)) &&
              (!('lastOpenedDate' in data) || (data.lastOpenedDate is string && data.lastOpenedDate.size() <= 20)) &&
+             (!('isMockTest' in data) || data.isMockTest is bool) &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
@@ -118,6 +126,14 @@ service cloud.firestore {
              data.scoreObtained is number && data.scoreObtained >= 0 &&
              data.totalMarks is number && data.totalMarks >= 0 &&
              data.percentage is number && data.percentage >= 0 && data.percentage <= 100 &&
+             (!('totalQuestions' in data) || (data.totalQuestions is int && data.totalQuestions >= 0)) &&
+             (!('attemptedCount' in data) || (data.attemptedCount is int && data.attemptedCount >= 0)) &&
+             (!('correctCount' in data) || (data.correctCount is int && data.correctCount >= 0)) &&
+             (!('wrongCount' in data) || (data.wrongCount is int && data.wrongCount >= 0)) &&
+             (!('unattemptedCount' in data) || (data.unattemptedCount is int && data.unattemptedCount >= 0)) &&
+             (!('durationSeconds' in data) || (data.durationSeconds is int && data.durationSeconds >= 0)) &&
+             (!('testMode' in data) || (data.testMode in ['PRACTICE', 'EXAM'])) &&
+             (!('breakdownJson' in data) || (data.breakdownJson is string && data.breakdownJson.size() <= 350000)) &&
              (!('summaryText' in data) || (data.summaryText is string && data.summaryText.size() <= 300)) &&
              data.takenDate is string && data.takenDate.size() >= 1 && data.takenDate.size() <= 20 &&
              data.createdAt is timestamp && data.createdAt <= request.time &&
@@ -150,10 +166,47 @@ service cloud.firestore {
              data.updatedAt is timestamp && data.updatedAt <= request.time;
     }
 
+    function isValidPersonalNote(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128)) &&
+             (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 100)) &&
+             (!('topicName' in data) || (data.topicName is string && data.topicName.size() <= 120)) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             (!('contentSummary' in data) || (data.contentSummary is string && data.contentSummary.size() <= 500)) &&
+             data.blocksJson is string && data.blocksJson.size() <= 350000 &&
+             data.updatedAtMillis is int && data.updatedAtMillis >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidPdfAnnotation(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             isValidId(data.noteId) &&
+             data.annotationsJson is string && data.annotationsJson.size() <= 600000 &&
+             data.updatedAtMillis is int && data.updatedAtMillis >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidBookmark(data, userId) {
+      return data.userId is string && data.userId == userId &&
+             data.bookmarkType in ['IMPORTANT_QUESTION', 'WRONG_QUESTION', 'FAVORITE_NOTE', 'SAVED_TOPIC', 'PDF_PAGE'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             (!('subtitle' in data) || (data.subtitle is string && data.subtitle.size() <= 300)) &&
+             (!('refId' in data) || (data.refId is string && data.refId.size() <= 128)) &&
+             (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128)) &&
+             (!('topicId' in data) || (data.topicId is string && data.topicId.size() <= 128)) &&
+             (!('subtopicId' in data) || (data.subtopicId is string && data.subtopicId.size() <= 128)) &&
+             (!('pageIndex' in data) || (data.pageIndex is int && data.pageIndex >= 0)) &&
+             (!('questionJson' in data) || (data.questionJson is string && data.questionJson.size() <= 10000)) &&
+             data.createdAtMillis is int && data.createdAtMillis >= 0 &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
     match /appConfig/support {
       allow get: if isSignedIn();
-      allow create, update: if isSignedIn() &&
-                               request.auth.token.email == 'lovely.bunts@gmail.com' &&
+      allow create, update: if isAdmin() &&
                                incoming().keys().hasAll(['whatsappDigits', 'updatedAt']) &&
                                incoming().keys().hasOnly(['whatsappDigits', 'updatedAt']) &&
                                incoming().whatsappDigits is string &&
@@ -164,18 +217,142 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Shared Educational Catalog (Admin uploads once -> All Students read published items)
+    match /sharedSubjects/{subjectId} {
+      allow get: if (isSignedIn() && existing().published == true) || isAdmin();
+      allow list: if isSignedIn();
+      allow create, update: if isAdmin() && isValidId(subjectId) &&
+                               incoming().nameEn is string && incoming().nameEn.size() >= 1 && incoming().nameEn.size() <= 80 &&
+                               incoming().published is bool &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /sharedTopics/{topicId} {
+      allow get: if (isSignedIn() && existing().published == true) || isAdmin();
+      allow list: if isSignedIn();
+      allow create, update: if isAdmin() && isValidId(topicId) &&
+                               isValidId(incoming().subjectId) &&
+                               incoming().name is string && incoming().name.size() >= 1 && incoming().name.size() <= 120 &&
+                               incoming().published is bool &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /sharedSubtopics/{subtopicId} {
+      allow get: if (isSignedIn() && existing().published == true) || isAdmin();
+      allow list: if isSignedIn();
+      allow create, update: if isAdmin() && isValidId(subtopicId) &&
+                               isValidId(incoming().subjectId) &&
+                               isValidId(incoming().topicId) &&
+                               incoming().name is string && incoming().name.size() >= 1 && incoming().name.size() <= 120 &&
+                               incoming().published is bool &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /sharedContent/{contentId} {
+      allow get: if (isSignedIn() && existing().published == true) || isAdmin();
+      allow list: if isSignedIn();
+      allow create: if isAdmin() && isValidId(contentId) &&
+                       isValidId(incoming().subjectId) &&
+                       isValidId(incoming().topicId) &&
+                       isValidId(incoming().subtopicId) &&
+                       incoming().title is string && incoming().title.size() >= 1 && incoming().title.size() <= 150 &&
+                       incoming().noteType in ['PDF', 'HTML', 'IMAGE', 'FOLDER'] &&
+                       incoming().version is int && incoming().version >= 1 &&
+                       incoming().published is bool &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow update: if (isAdmin() &&
+                        incoming().title is string && incoming().title.size() >= 1 && incoming().title.size() <= 150 &&
+                        incoming().published is bool &&
+                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time) ||
+                       (isSignedIn() &&
+                        existing().published == true &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['downloadsCount', 'updatedAt']) &&
+                        incoming().downloadsCount is int &&
+                        incoming().downloadsCount == existing().downloadsCount + 1 &&
+                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time);
+      allow delete: if isAdmin();
+    }
+
+    match /sharedVideos/{videoId} {
+      allow get: if (isSignedIn() && existing().published == true) || isAdmin();
+      allow list: if isSignedIn();
+      allow create, update: if isAdmin() && isValidId(videoId) &&
+                               isValidId(incoming().subjectId) &&
+                               isValidId(incoming().topicId) &&
+                               isValidId(incoming().subtopicId) &&
+                               incoming().title is string && incoming().title.size() >= 1 && incoming().title.size() <= 150 &&
+                               incoming().youtubeUrl is string && incoming().youtubeUrl.size() >= 1 && incoming().youtubeUrl.size() <= 500 &&
+                               incoming().published is bool &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
+    match /sharedMcqs/{mcqId} {
+      allow get: if (isSignedIn() && existing().published == true) || isAdmin();
+      allow list: if isSignedIn();
+      allow create, update: if isAdmin() && isValidId(mcqId) &&
+                               isValidId(incoming().subjectId) &&
+                               isValidId(incoming().topicId) &&
+                               isValidId(incoming().subtopicId) &&
+                               incoming().question is string && incoming().question.size() >= 1 && incoming().question.size() <= 500 &&
+                               incoming().options is list && incoming().options.size() >= 2 && incoming().options.size() <= 6 &&
+                               incoming().correctIndex is int && incoming().correctIndex >= 0 && incoming().correctIndex < incoming().options.size() &&
+                               incoming().published is bool &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
+    // Student summaries for Admin Analytics Dashboard
+    match /studentSummaries/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update: if isOwner(userId) &&
+                               incoming().userId == userId &&
+                               incoming().displayName is string && incoming().displayName.size() >= 1 && incoming().displayName.size() <= 100 &&
+                               incoming().downloadsCount is int && incoming().downloadsCount >= 0 &&
+                               incoming().testAttemptsCount is int && incoming().testAttemptsCount >= 0 &&
+                               incoming().averageScorePct is number && incoming().averageScorePct >= 0 && incoming().averageScorePct <= 100 &&
+                               incoming().lastActiveMillis is int && incoming().lastActiveMillis >= 0 &&
+                               incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
+    // Student WhatsApp material/test requests tracked for Admin
+    match /whatsappRequests/{requestId} {
+      allow get: if isAdmin() || (isSignedIn() && existing().userId == request.auth.uid);
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && isValidId(requestId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().studentName is string && incoming().studentName.size() >= 1 && incoming().studentName.size() <= 100 &&
+                       incoming().requestType is string && incoming().requestType.size() >= 1 && incoming().requestType.size() <= 80 &&
+                       incoming().subject is string && incoming().subject.size() >= 1 && incoming().subject.size() <= 100 &&
+                       incoming().status in ['PENDING', 'FULFILLED', 'REPLIED'] &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow update: if isAdmin() &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+                       incoming().status in ['PENDING', 'FULFILLED', 'REPLIED'] &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+      allow delete: if isAdmin();
+    }
+
     match /users/{userId} {
-      allow get, list: if isOwner(userId);
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
       allow create: if isOwner(userId) &&
                        incoming().keys().hasAll(['userId', 'displayName', 'createdAt', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['userId', 'displayName', 'examName', 'examDateMillis', 'themeId', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'email', 'photoUrl', 'role', 'examName', 'examDateMillis', 'themeId', 'createdAt', 'updatedAt']) &&
                        isValidUserProfile(incoming(), userId);
       allow update: if isSignedIn() &&
                        isValidUserProfile(incoming(), userId) &&
                        isOwner(userId) &&
                        incoming().userId == existing().userId &&
                        incoming().createdAt == existing().createdAt &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'examName', 'examDateMillis', 'themeId', 'updatedAt']);
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoUrl', 'role', 'examName', 'examDateMillis', 'themeId', 'updatedAt']);
       allow delete: if isOwner(userId);
 
       match /subjects/{subjectId} {
@@ -234,7 +411,7 @@ service cloud.firestore {
         allow list: if isOwner(userId);
         allow create: if isOwner(userId) && isValidId(noteId) &&
                          incoming().keys().hasAll(['userId', 'subjectId', 'topicId', 'subtopicId', 'folderName', 'title', 'noteType', 'createdAt', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['userId', 'subjectId', 'topicId', 'subtopicId', 'folderName', 'title', 'noteType', 'localFileName', 'htmlContent', 'lastOpenedDate', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'subjectId', 'topicId', 'subtopicId', 'folderName', 'title', 'noteType', 'localFileName', 'htmlContent', 'lastOpenedDate', 'isMockTest', 'createdAt', 'updatedAt']) &&
                          isValidNote(incoming(), userId);
         allow update: if isSignedIn() &&
                          isValidNote(incoming(), userId) &&
@@ -244,7 +421,7 @@ service cloud.firestore {
                          incoming().topicId == existing().topicId &&
                          incoming().subtopicId == existing().subtopicId &&
                          incoming().createdAt == existing().createdAt &&
-                         incoming().diff(existing()).affectedKeys().hasOnly(['folderName', 'title', 'localFileName', 'htmlContent', 'lastOpenedDate', 'updatedAt']);
+                         incoming().diff(existing()).affectedKeys().hasOnly(['folderName', 'title', 'localFileName', 'htmlContent', 'lastOpenedDate', 'isMockTest', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(noteId);
       }
 
@@ -287,18 +464,18 @@ service cloud.firestore {
       }
 
       match /testResults/{resultId} {
-        allow get: if isOwner(userId) && isValidId(resultId);
-        allow list: if isOwner(userId);
+        allow get: if (isOwner(userId) || isAdmin()) && isValidId(resultId);
+        allow list: if isOwner(userId) || isAdmin();
         allow create: if isOwner(userId) && isValidId(resultId) &&
                          incoming().keys().hasAll(['userId', 'subjectId', 'topicId', 'subtopicId', 'testTitle', 'scoreObtained', 'totalMarks', 'percentage', 'takenDate', 'createdAt', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['userId', 'subjectId', 'topicId', 'subtopicId', 'noteId', 'testTitle', 'scoreObtained', 'totalMarks', 'percentage', 'summaryText', 'takenDate', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'subjectId', 'topicId', 'subtopicId', 'noteId', 'testTitle', 'scoreObtained', 'totalMarks', 'percentage', 'totalQuestions', 'attemptedCount', 'correctCount', 'wrongCount', 'unattemptedCount', 'durationSeconds', 'testMode', 'breakdownJson', 'summaryText', 'takenDate', 'createdAt', 'updatedAt']) &&
                          isValidTestResult(incoming(), userId);
         allow update: if isSignedIn() &&
                          isValidTestResult(incoming(), userId) &&
                          isOwner(userId) && isValidId(resultId) &&
                          incoming().userId == existing().userId &&
                          incoming().createdAt == existing().createdAt &&
-                         incoming().diff(existing()).affectedKeys().hasOnly(['scoreObtained', 'totalMarks', 'percentage', 'summaryText', 'updatedAt']);
+                         incoming().diff(existing()).affectedKeys().hasOnly(['scoreObtained', 'totalMarks', 'percentage', 'totalQuestions', 'attemptedCount', 'correctCount', 'wrongCount', 'unattemptedCount', 'durationSeconds', 'testMode', 'breakdownJson', 'summaryText', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(resultId);
       }
 
@@ -332,6 +509,55 @@ service cloud.firestore {
                          incoming().createdAt == existing().createdAt &&
                          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'subjectName', 'sourceName', 'content', 'pdfTitle', 'pdfLocalFileName', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(entryId);
+      }
+
+      match /personalNotes/{noteId} {
+        allow get: if isOwner(userId) && isValidId(noteId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(noteId) &&
+                         incoming().keys().hasAll(['userId', 'title', 'blocksJson', 'updatedAtMillis', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'subjectId', 'subjectName', 'topicName', 'title', 'contentSummary', 'blocksJson', 'updatedAtMillis', 'createdAt', 'updatedAt']) &&
+                         isValidPersonalNote(incoming(), userId);
+        allow update: if isSignedIn() &&
+                         isValidPersonalNote(incoming(), userId) &&
+                         isOwner(userId) && isValidId(noteId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['subjectId', 'subjectName', 'topicName', 'title', 'contentSummary', 'blocksJson', 'updatedAtMillis', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(noteId);
+      }
+
+      match /pdfAnnotations/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'noteId', 'annotationsJson', 'updatedAtMillis', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'noteId', 'annotationsJson', 'updatedAtMillis', 'createdAt', 'updatedAt']) &&
+                         isValidPdfAnnotation(incoming(), userId);
+        allow update: if isSignedIn() &&
+                         isValidPdfAnnotation(incoming(), userId) &&
+                         isOwner(userId) && isValidId(docId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().noteId == existing().noteId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['annotationsJson', 'updatedAtMillis', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(docId);
+      }
+
+      match /bookmarks/{bookmarkId} {
+        allow get: if isOwner(userId) && isValidId(bookmarkId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(bookmarkId) &&
+                         incoming().keys().hasAll(['userId', 'bookmarkType', 'title', 'createdAtMillis', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'bookmarkType', 'title', 'subtitle', 'refId', 'subjectId', 'topicId', 'subtopicId', 'pageIndex', 'questionJson', 'createdAtMillis', 'createdAt', 'updatedAt']) &&
+                         isValidBookmark(incoming(), userId);
+        allow update: if isSignedIn() &&
+                         isValidBookmark(incoming(), userId) &&
+                         isOwner(userId) && isValidId(bookmarkId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['bookmarkType', 'title', 'subtitle', 'refId', 'subjectId', 'topicId', 'subtopicId', 'pageIndex', 'questionJson', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(bookmarkId);
       }
     }
   }

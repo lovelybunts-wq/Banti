@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.VerifiedUser
@@ -40,10 +42,12 @@ import com.example.ui.theme.LocalStudyTheme
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WhatsAppRequestDialog(
+    studentName: String = "Student",
     initialSubject: String = "",
     initialTopic: String = "",
     initialSubtopic: String = "",
     savedAdminNumber: String = "",
+    onRecordRequest: (requestType: String, subject: String, topic: String, subtopic: String, extraMessage: String) -> Unit = { _, _, _, _, _ -> },
     onShowMessage: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -55,6 +59,7 @@ fun WhatsAppRequestDialog(
             .ifBlank { UserPreferencesManager.DEFAULT_ADMIN_WHATSAPP_DIGITS }
     }
 
+    var senderName by remember(studentName) { mutableStateOf(studentName.ifBlank { "Student" }) }
     var subject by remember { mutableStateOf(initialSubject) }
     var topic by remember { mutableStateOf(initialTopic) }
     var subtopic by remember { mutableStateOf(initialSubtopic) }
@@ -73,7 +78,10 @@ fun WhatsAppRequestDialog(
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -84,11 +92,18 @@ fun WhatsAppRequestDialog(
                         tint = theme.success
                     )
                     Text(
-                        text = "Official Learn Talent Admin Support (नंबर सुरक्षित एवं गोपनीय है)",
+                        text = "Official Learn Talent Support (एडमिन नंबर गोपनीय व सुरक्षित है)",
                         style = MaterialTheme.typography.bodySmall,
                         color = theme.success
                     )
                 }
+                OutlinedTextField(
+                    value = senderName,
+                    onValueChange = { senderName = it },
+                    label = { Text("Student Name (आपका नाम)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 OutlinedTextField(
                     value = subject,
                     onValueChange = { subject = it },
@@ -139,14 +154,19 @@ fun WhatsAppRequestDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val msg = buildString {
-                        append("नमस्ते Admin,\n")
-                        append("मुझे Learn Talent ऐप के लिए *$requestType* चाहिए।\n")
-                        if (subject.isNotBlank()) append("• विषय (Subject): ${subject.trim()}\n")
-                        if (topic.isNotBlank()) append("• टॉपिक (Topic): ${topic.trim()}\n")
-                        if (subtopic.isNotBlank()) append("• सब-टॉपिक (Sub-topic): ${subtopic.trim()}\n")
-                        if (extraNote.isNotBlank()) append("• संदेश: ${extraNote.trim()}\n")
-                    }
+                    val cleanSubj = subject.trim()
+                    val cleanTop = topic.trim()
+                    val cleanSub = subtopic.trim()
+                    val cleanExtra = extraNote.trim()
+                    val msg = buildWhatsAppRequestMessage(
+                        studentName = senderName.trim().ifBlank { "Student" },
+                        requestType = requestType,
+                        subject = cleanSubj,
+                        topic = cleanTop,
+                        subtopic = cleanSub,
+                        extraNote = cleanExtra
+                    )
+                    onRecordRequest(requestType, cleanSubj, cleanTop, cleanSub, cleanExtra)
                     openWhatsAppChat(context, resolvedDigits, msg, onShowMessage)
                     onDismiss()
                 },
@@ -165,6 +185,23 @@ fun WhatsAppRequestDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+fun buildWhatsAppRequestMessage(
+    studentName: String,
+    requestType: String,
+    subject: String,
+    topic: String,
+    subtopic: String,
+    extraNote: String,
+): String = buildString {
+    append("नमस्ते Admin,\n")
+    append("• छात्र (Student): $studentName\n")
+    append("मुझे *LEARN TALENT by Bunts* ऐप के लिए *$requestType* चाहिए।\n")
+    if (subject.isNotBlank()) append("• विषय (Subject): $subject\n")
+    if (topic.isNotBlank()) append("• टॉपिक (Topic): $topic\n")
+    if (subtopic.isNotBlank()) append("• सब-टॉपिक (Sub-topic): $subtopic\n")
+    if (extraNote.isNotBlank()) append("• संदेश: $extraNote\n")
 }
 
 private fun openWhatsAppChat(

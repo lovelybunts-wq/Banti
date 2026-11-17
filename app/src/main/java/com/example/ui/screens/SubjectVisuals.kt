@@ -6,9 +6,13 @@ import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.AutoStories
 import androidx.compose.material.icons.rounded.Biotech
 import androidx.compose.material.icons.rounded.Calculate
+import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.HistoryEdu
+import androidx.compose.material.icons.rounded.LocationCity
+import androidx.compose.material.icons.rounded.Newspaper
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -22,6 +26,10 @@ object SubjectVisuals {
         "maths" -> Icons.Rounded.Calculate
         "science" -> Icons.Rounded.Biotech
         "reasoning" -> Icons.Rounded.Psychology
+        "computer" -> Icons.Rounded.Computer
+        "current_affairs" -> Icons.Rounded.Newspaper
+        "mp_gk" -> Icons.Rounded.LocationCity
+        "general_studies" -> Icons.Rounded.School
         "book" -> Icons.AutoMirrored.Rounded.MenuBook
         else -> Icons.Rounded.AutoStories
     }
@@ -35,13 +43,16 @@ object SubjectVisuals {
     }
 
     val presetPalette = listOf(
-        "#F6AD55",
-        "#4FD1C5",
-        "#68D391",
-        "#90CDF4",
-        "#818CF8",
-        "#F472B6",
-        "#FBBF24",
+        "#2456A4",
+        "#35BDB5",
+        "#D97706",
+        "#0D9488",
+        "#16A34A",
+        "#2563EB",
+        "#7C3AED",
+        "#DB2777",
+        "#0284C7",
+        "#EA580C",
     )
 
     val presetIconKeys = listOf(
@@ -52,6 +63,10 @@ object SubjectVisuals {
         "maths" to "Maths",
         "science" to "Science",
         "reasoning" to "Reasoning",
-        "book" to "General",
+        "computer" to "Computer",
+        "current_affairs" to "Current Affairs",
+        "mp_gk" to "MP GK",
+        "general_studies" to "General Studies",
+        "book" to "Other",
     )
 }

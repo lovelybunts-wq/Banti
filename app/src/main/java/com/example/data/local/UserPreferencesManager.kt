@@ -16,7 +16,9 @@ import kotlinx.coroutines.flow.map
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "learn_talent_prefs")
 
 data class LocalAppSettings(
-    val themeOption: StudyThemeOption = StudyThemeOption.MIDNIGHT_TEAL,
+    val themeOption: StudyThemeOption = StudyThemeOption.BUNTS_ROYAL_LIGHT,
+    val lastLightThemeId: String = StudyThemeOption.BUNTS_ROYAL_LIGHT.id,
+    val lastDarkThemeId: String = StudyThemeOption.BUNTS_NAVY_DARK.id,
     val biometricLockEnabled: Boolean = false,
     val cloudSyncEnabled: Boolean = true,
     val reminderEnabled: Boolean = false,
@@ -30,11 +32,14 @@ data class LocalAppSettings(
     val driveUserId: String = "",
     val driveUserEmail: String = "",
     val driveUserName: String = "",
+    val driveUserPhotoUrl: String = "",
 )
 
 class UserPreferencesManager(private val context: Context) {
     private object Keys {
         val THEME_ID = stringPreferencesKey("theme_id")
+        val LAST_LIGHT_THEME_ID = stringPreferencesKey("last_light_theme_id")
+        val LAST_DARK_THEME_ID = stringPreferencesKey("last_dark_theme_id")
         val BIOMETRIC_LOCK = booleanPreferencesKey("biometric_lock")
         val CLOUD_SYNC = booleanPreferencesKey("cloud_sync")
         val REMINDER_ENABLED = booleanPreferencesKey("reminder_enabled")
@@ -48,12 +53,15 @@ class UserPreferencesManager(private val context: Context) {
         val DRIVE_USER_ID = stringPreferencesKey("drive_user_id")
         val DRIVE_USER_EMAIL = stringPreferencesKey("drive_user_email")
         val DRIVE_USER_NAME = stringPreferencesKey("drive_user_name")
+        val DRIVE_USER_PHOTO_URL = stringPreferencesKey("drive_user_photo_url")
         fun seededKey(uid: String) = booleanPreferencesKey("seeded_$uid")
     }
 
     val settingsFlow: Flow<LocalAppSettings> = context.dataStore.data.map { prefs ->
         LocalAppSettings(
             themeOption = StudyThemeOption.fromId(prefs[Keys.THEME_ID]),
+            lastLightThemeId = prefs[Keys.LAST_LIGHT_THEME_ID] ?: StudyThemeOption.BUNTS_ROYAL_LIGHT.id,
+            lastDarkThemeId = prefs[Keys.LAST_DARK_THEME_ID] ?: StudyThemeOption.BUNTS_NAVY_DARK.id,
             biometricLockEnabled = prefs[Keys.BIOMETRIC_LOCK] ?: false,
             cloudSyncEnabled = prefs[Keys.CLOUD_SYNC] ?: true,
             reminderEnabled = prefs[Keys.REMINDER_ENABLED] ?: false,
@@ -67,11 +75,20 @@ class UserPreferencesManager(private val context: Context) {
             driveUserId = prefs[Keys.DRIVE_USER_ID] ?: "",
             driveUserEmail = prefs[Keys.DRIVE_USER_EMAIL] ?: "",
             driveUserName = prefs[Keys.DRIVE_USER_NAME] ?: "",
+            driveUserPhotoUrl = prefs[Keys.DRIVE_USER_PHOTO_URL] ?: "",
         )
     }
 
     suspend fun setTheme(themeId: String) {
-        context.dataStore.edit { it[Keys.THEME_ID] = themeId }
+        val option = StudyThemeOption.fromId(themeId)
+        context.dataStore.edit { prefs ->
+            prefs[Keys.THEME_ID] = option.id
+            if (option.isLight) {
+                prefs[Keys.LAST_LIGHT_THEME_ID] = option.id
+            } else {
+                prefs[Keys.LAST_DARK_THEME_ID] = option.id
+            }
+        }
     }
 
     suspend fun setBiometricLockEnabled(enabled: Boolean) {
@@ -110,11 +127,12 @@ class UserPreferencesManager(private val context: Context) {
         context.dataStore.edit { it[Keys.LAST_DRIVE_BACKUP_MILLIS] = millis }
     }
 
-    suspend fun setDriveUserSession(userId: String, email: String, name: String) {
+    suspend fun setDriveUserSession(userId: String, email: String, name: String, photoUrl: String = "") {
         context.dataStore.edit {
             it[Keys.DRIVE_USER_ID] = userId
             it[Keys.DRIVE_USER_EMAIL] = email
             it[Keys.DRIVE_USER_NAME] = name
+            it[Keys.DRIVE_USER_PHOTO_URL] = photoUrl
         }
     }
 
@@ -123,6 +141,7 @@ class UserPreferencesManager(private val context: Context) {
             it.remove(Keys.DRIVE_USER_ID)
             it.remove(Keys.DRIVE_USER_EMAIL)
             it.remove(Keys.DRIVE_USER_NAME)
+            it.remove(Keys.DRIVE_USER_PHOTO_URL)
         }
     }
 

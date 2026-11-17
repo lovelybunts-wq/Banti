@@ -4,12 +4,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.unit.dp
 
-val LocalStudyTheme = staticCompositionLocalOf { StudyThemeOption.MIDNIGHT_TEAL }
+val LocalStudyTheme = staticCompositionLocalOf { StudyThemeOption.BUNTS_ROYAL_LIGHT }
 
 val AppShapes = Shapes(
     small = RoundedCornerShape(12.dp),
@@ -20,28 +21,50 @@ val AppShapes = Shapes(
 
 @Composable
 fun LearnTalentTheme(
-    themeOption: StudyThemeOption = StudyThemeOption.MIDNIGHT_TEAL,
+    themeOption: StudyThemeOption = StudyThemeOption.BUNTS_ROYAL_LIGHT,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = darkColorScheme(
-        primary = themeOption.primary,
-        onPrimary = themeOption.onPrimary,
-        primaryContainer = themeOption.primaryContainer,
-        onPrimaryContainer = themeOption.onPrimaryContainer,
-        secondary = themeOption.secondary,
-        onSecondary = themeOption.onSecondary,
-        secondaryContainer = themeOption.secondaryContainer,
-        onSecondaryContainer = themeOption.onSecondaryContainer,
-        tertiary = themeOption.tertiary,
-        background = themeOption.background,
-        onBackground = themeOption.onBackground,
-        surface = themeOption.surface,
-        onSurface = themeOption.onSurface,
-        surfaceVariant = themeOption.surfaceElevated,
-        onSurfaceVariant = themeOption.onSurfaceVariant,
-        outline = themeOption.outline,
-        error = themeOption.error,
-    )
+    val colorScheme = if (themeOption.isLight) {
+        lightColorScheme(
+            primary = themeOption.primary,
+            onPrimary = themeOption.onPrimary,
+            primaryContainer = themeOption.primaryContainer,
+            onPrimaryContainer = themeOption.onPrimaryContainer,
+            secondary = themeOption.secondary,
+            onSecondary = themeOption.onSecondary,
+            secondaryContainer = themeOption.secondaryContainer,
+            onSecondaryContainer = themeOption.onSecondaryContainer,
+            tertiary = themeOption.tertiary,
+            background = themeOption.background,
+            onBackground = themeOption.onBackground,
+            surface = themeOption.surface,
+            onSurface = themeOption.onSurface,
+            surfaceVariant = themeOption.surfaceElevated,
+            onSurfaceVariant = themeOption.onSurfaceVariant,
+            outline = themeOption.outline,
+            error = themeOption.error,
+        )
+    } else {
+        darkColorScheme(
+            primary = themeOption.primary,
+            onPrimary = themeOption.onPrimary,
+            primaryContainer = themeOption.primaryContainer,
+            onPrimaryContainer = themeOption.onPrimaryContainer,
+            secondary = themeOption.secondary,
+            onSecondary = themeOption.onSecondary,
+            secondaryContainer = themeOption.secondaryContainer,
+            onSecondaryContainer = themeOption.onSecondaryContainer,
+            tertiary = themeOption.tertiary,
+            background = themeOption.background,
+            onBackground = themeOption.onBackground,
+            surface = themeOption.surface,
+            onSurface = themeOption.onSurface,
+            surfaceVariant = themeOption.surfaceElevated,
+            onSurfaceVariant = themeOption.onSurfaceVariant,
+            outline = themeOption.outline,
+            error = themeOption.error,
+        )
+    }
 
     CompositionLocalProvider(LocalStudyTheme provides themeOption) {
         MaterialTheme(

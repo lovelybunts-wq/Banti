@@ -24,11 +24,11 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `offline store seeds 7 subjects and persists revision diary with source and pdf`() = runTest {
+    fun `offline store seeds 12 subjects and persists revision diary with source and pdf`() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val store = LocalOfflineStore(context, ownerId = "drive_user_test")
 
-        assertEquals(7, store.subjects.value.size)
+        assertEquals(12, store.subjects.value.size)
 
         store.addRevisionDiaryEntry(
             dateKey = "2026-11-16",

@@ -19,6 +19,7 @@ data class PdfViewerRoute(
     val noteId: String = "",
     val localFileName: String? = null,
     val title: String? = null,
+    val initialPage: Int = 0,
 )
 
 @Serializable
@@ -34,11 +35,28 @@ data class HtmlTestRoute(
 )
 
 @Serializable
+data class TestResultRoute(
+    val resultId: String,
+)
+
+@Serializable
 data class McqPracticeRoute(
     val subjectId: String,
     val topicId: String,
     val subtopicId: String,
 )
+
+@Serializable
+data class PersonalNotesRoute(
+    val subjectId: String = "",
+    val noteId: String = "",
+)
+
+@Serializable
+data object BookmarksRoute
+
+@Serializable
+data object AdminPanelRoute
 
 @Serializable
 data object RevisionPlannerRoute

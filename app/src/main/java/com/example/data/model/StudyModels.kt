@@ -5,6 +5,7 @@ import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentId
 import com.google.firebase.firestore.IgnoreExtraProperties
 import com.google.firebase.firestore.ServerTimestamp
+import kotlinx.serialization.Serializable
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -19,8 +20,41 @@ enum class NoteType {
     FOLDER;
 
     companion object {
-        fun fromRaw(raw: String?): NoteType =
-            entries.firstOrNull { it.name == raw } ?: PDF
+        fun fromRaw(raw: String?): NoteType = when (raw?.uppercase()) {
+            "PDF" -> PDF
+            "HTML", "HTML_NOTE", "HTML_TEST" -> HTML
+            "IMAGE" -> IMAGE
+            "FOLDER" -> FOLDER
+            else -> PDF
+        }
+    }
+}
+
+enum class BookmarkType {
+    IMPORTANT_QUESTION,
+    WRONG_QUESTION,
+    FAVORITE_NOTE,
+    SAVED_TOPIC,
+    PDF_PAGE;
+
+    companion object {
+        fun fromRaw(raw: String?): BookmarkType =
+            entries.firstOrNull { it.name == raw } ?: FAVORITE_NOTE
+    }
+}
+
+enum class PersonalNoteBlockType {
+    HEADING,
+    PARAGRAPH,
+    HIGHLIGHT,
+    BULLET,
+    CHECKLIST,
+    TABLE_ROW,
+    IMAGE;
+
+    companion object {
+        fun fromRaw(raw: String?): PersonalNoteBlockType =
+            entries.firstOrNull { it.name == raw } ?: PARAGRAPH
     }
 }
 
@@ -30,9 +64,12 @@ data class UserProfile(
     @DocumentId val id: String = "",
     val userId: String = "",
     val displayName: String = "",
+    val email: String? = null,
+    val photoUrl: String? = null,
+    val role: String = "student",
     val examName: String? = null,
     val examDateMillis: Long? = null,
-    val themeId: String = "midnight_teal",
+    val themeId: String = "bunts_royal_light",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )
@@ -45,8 +82,10 @@ data class Subject(
     val nameEn: String = "",
     val nameHi: String? = null,
     val iconKey: String = "book",
-    val colorHex: String = "#4FD1C5",
+    val colorHex: String = "#2456A4",
     val sortOrder: Long = 0L,
+    val isShared: Boolean = false,
+    val published: Boolean = true,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )
@@ -59,6 +98,8 @@ data class Topic(
     val subjectId: String = "",
     val name: String = "",
     val description: String? = null,
+    val isShared: Boolean = false,
+    val published: Boolean = true,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )
@@ -72,6 +113,8 @@ data class Subtopic(
     val topicId: String = "",
     val name: String = "",
     val lastStudiedDate: String? = null,
+    val isShared: Boolean = false,
+    val published: Boolean = true,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )
@@ -90,6 +133,14 @@ data class StudyNote(
     val localFileName: String? = null,
     val htmlContent: String? = null,
     val lastOpenedDate: String? = null,
+    val isShared: Boolean = false,
+    val storagePath: String? = null,
+    val downloadUrl: String? = null,
+    val version: Long = 1L,
+    val published: Boolean = true,
+    val downloadsCount: Long = 0L,
+    val fileSizeBytes: Long = 0L,
+    val isMockTest: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 ) {
@@ -108,6 +159,8 @@ data class VideoLink(
     val youtubeUrl: String = "",
     val channelOrNote: String? = null,
     val lastWatchedDate: String? = null,
+    val isShared: Boolean = false,
+    val published: Boolean = true,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )
@@ -124,8 +177,39 @@ data class McqQuestion(
     val options: List<String> = emptyList(),
     val correctIndex: Long = 0L,
     val explanation: String? = null,
+    val isShared: Boolean = false,
+    val published: Boolean = true,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+@Serializable
+data class QuestionAttemptRecord(
+    val questionNumber: Int = 1,
+    val questionText: String = "",
+    val options: List<String> = emptyList(),
+    val selectedOption: String = "",
+    val correctOption: String = "",
+    val explanation: String = "",
+    val isCorrect: Boolean = false,
+    val isAttempted: Boolean = false,
+    val isMarkedForReview: Boolean = false,
+    val subjectName: String = "",
+)
+
+@Serializable
+data class InProgressTestAttempt(
+    val noteId: String = "",
+    val testTitle: String = "",
+    val subjectId: String = "",
+    val topicId: String = "",
+    val subtopicId: String = "",
+    val testMode: String = "EXAM",
+    val elapsedSeconds: Long = 0L,
+    val currentQuestionIndex: Int = 0,
+    val answers: Map<Int, String> = emptyMap(),
+    val markedForReview: List<Int> = emptyList(),
+    val savedAtMillis: Long = 0L,
 )
 
 @Keep
@@ -141,6 +225,14 @@ data class TestResult(
     val scoreObtained: Double = 0.0,
     val totalMarks: Double = 0.0,
     val percentage: Double = 0.0,
+    val totalQuestions: Int = 0,
+    val attemptedCount: Int = 0,
+    val correctCount: Int = 0,
+    val wrongCount: Int = 0,
+    val unattemptedCount: Int = 0,
+    val durationSeconds: Long = 0L,
+    val testMode: String = "EXAM",
+    val breakdownJson: String? = null,
     val summaryText: String? = null,
     val takenDate: String = "",
     @ServerTimestamp val createdAt: Timestamp? = null,
@@ -175,6 +267,100 @@ data class RevisionDiaryEntry(
     val content: String = "",
     val pdfTitle: String? = null,
     val pdfLocalFileName: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+@Serializable
+data class PersonalNoteBlock(
+    val id: String = "",
+    val type: String = PersonalNoteBlockType.PARAGRAPH.name,
+    val text: String = "",
+    val checked: Boolean = false,
+    val textColorHex: String = "#14243A",
+    val highlightColorHex: String? = null,
+    val fontSizeSp: Int = 16,
+    val tableCells: List<String> = emptyList(),
+    val imageFileName: String? = null,
+)
+
+@Keep
+@IgnoreExtraProperties
+data class PersonalNote(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val subjectId: String = "",
+    val subjectName: String = "",
+    val topicName: String = "",
+    val title: String = "",
+    val contentSummary: String = "",
+    val blocksJson: String = "[]",
+    val updatedAtMillis: Long = 0L,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+@Keep
+@IgnoreExtraProperties
+data class BookmarkItem(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val bookmarkType: String = BookmarkType.FAVORITE_NOTE.name,
+    val title: String = "",
+    val subtitle: String = "",
+    val refId: String = "",
+    val subjectId: String = "",
+    val topicId: String = "",
+    val subtopicId: String = "",
+    val pageIndex: Int = 0,
+    val questionJson: String? = null,
+    val createdAtMillis: Long = 0L,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+@Serializable
+data class RecentActivityItem(
+    val id: String = "",
+    val itemType: String = "NOTE",
+    val title: String = "",
+    val subtitle: String = "",
+    val subjectId: String = "",
+    val topicId: String = "",
+    val subtopicId: String = "",
+    val refId: String = "",
+    val timestampMillis: Long = 0L,
+)
+
+@Keep
+@IgnoreExtraProperties
+data class WhatsAppRequestRecord(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val studentName: String = "",
+    val studentEmail: String = "",
+    val requestType: String = "",
+    val subject: String = "",
+    val topic: String = "",
+    val subtopic: String = "",
+    val extraMessage: String = "",
+    val status: String = "PENDING",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null,
+)
+
+@Keep
+@IgnoreExtraProperties
+data class StudentSummary(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val displayName: String = "",
+    val email: String = "",
+    val photoUrl: String? = null,
+    val downloadsCount: Long = 0L,
+    val testAttemptsCount: Long = 0L,
+    val averageScorePct: Double = 0.0,
+    val lastActiveMillis: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null,
 )

@@ -2,74 +2,30 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "User profile, exam countdown settings, and preferred dark theme.",
+      "description": "User profile, email, photo, exam countdown settings, and preferred theme.",
       "type": "object",
       "properties": {
-        "userId": { "type": "string", "description": "Firebase Auth UID of the owner." },
-        "displayName": { "type": "string", "description": "User display name." },
-        "examName": { "type": "string", "description": "Target exam name." },
-        "examDateMillis": { "type": "integer", "description": "Target exam epoch milliseconds." },
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "role": { "type": "string" },
+        "examName": { "type": "string" },
+        "examDateMillis": { "type": "integer" },
         "themeId": {
           "type": "string",
-          "enum": ["midnight_teal", "forest_sage", "indigo_velvet", "warm_espresso"],
-          "description": "Selected dark theme palette."
+          "enum": ["bunts_royal_light", "bunts_navy_dark", "midnight_teal", "forest_sage", "indigo_velvet", "warm_espresso"]
         },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp." },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp." }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "displayName", "createdAt", "updatedAt"]
     },
-    "Subject": {
-      "title": "Subject",
-      "description": "Study subject (e.g., History, Polity, Science).",
+    "SharedContentItem": {
+      "title": "SharedContentItem",
+      "description": "Admin-uploaded PDF/HTML/Image shared across all students with Firebase Storage path and version.",
       "type": "object",
       "properties": {
-        "userId": { "type": "string" },
-        "nameEn": { "type": "string" },
-        "nameHi": { "type": "string" },
-        "iconKey": { "type": "string" },
-        "colorHex": { "type": "string" },
-        "sortOrder": { "type": "integer" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["userId", "nameEn", "iconKey", "colorHex", "sortOrder", "createdAt", "updatedAt"]
-    },
-    "Topic": {
-      "title": "Topic",
-      "description": "Topic inside a subject (e.g., Physics/Chemistry/Biology under Science).",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "subjectId": { "type": "string" },
-        "name": { "type": "string" },
-        "description": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["userId", "subjectId", "name", "createdAt", "updatedAt"]
-    },
-    "Subtopic": {
-      "title": "Subtopic",
-      "description": "Sub-topic inside a topic containing notes, videos, MCQs, and HTML tests.",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "subjectId": { "type": "string" },
-        "topicId": { "type": "string" },
-        "name": { "type": "string" },
-        "lastStudiedDate": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["userId", "subjectId", "topicId", "name", "createdAt", "updatedAt"]
-    },
-    "StudyNote": {
-      "title": "StudyNote",
-      "description": "User note or folder (PDF, HTML, Image, or Folder).",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
         "subjectId": { "type": "string" },
         "topicId": { "type": "string" },
         "subtopicId": { "type": "string" },
@@ -77,145 +33,117 @@
         "title": { "type": "string" },
         "noteType": { "type": "string", "enum": ["PDF", "HTML", "IMAGE", "FOLDER"] },
         "localFileName": { "type": "string" },
+        "storagePath": { "type": "string" },
+        "downloadUrl": { "type": "string" },
         "htmlContent": { "type": "string" },
-        "lastOpenedDate": { "type": "string" },
+        "version": { "type": "integer" },
+        "published": { "type": "boolean" },
+        "isMockTest": { "type": "boolean" },
+        "downloadsCount": { "type": "integer" },
+        "fileSizeBytes": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "subjectId", "topicId", "subtopicId", "folderName", "title", "noteType", "createdAt", "updatedAt"]
+      "required": ["subjectId", "topicId", "subtopicId", "folderName", "title", "noteType", "version", "published", "createdAt", "updatedAt"]
     },
-    "VideoLink": {
-      "title": "VideoLink",
-      "description": "Saved YouTube video link for a sub-topic.",
+    "PersonalNote": {
+      "title": "PersonalNote",
+      "description": "Student rich-text personal note with headings, checklists, tables, highlights, and images.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
         "subjectId": { "type": "string" },
-        "topicId": { "type": "string" },
-        "subtopicId": { "type": "string" },
+        "subjectName": { "type": "string" },
+        "topicName": { "type": "string" },
         "title": { "type": "string" },
-        "youtubeUrl": { "type": "string" },
-        "channelOrNote": { "type": "string" },
-        "lastWatchedDate": { "type": "string" },
+        "contentSummary": { "type": "string" },
+        "blocksJson": { "type": "string" },
+        "updatedAtMillis": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "subjectId", "topicId", "subtopicId", "title", "youtubeUrl", "createdAt", "updatedAt"]
+      "required": ["userId", "title", "blocksJson", "updatedAtMillis", "createdAt", "updatedAt"]
     },
-    "McqQuestion": {
-      "title": "McqQuestion",
-      "description": "Practice multiple-choice question inside a sub-topic.",
+    "PdfAnnotationDoc": {
+      "title": "PdfAnnotationDoc",
+      "description": "Per-student PDF digital pen strokes, highlights, shapes, and text boxes.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
-        "subjectId": { "type": "string" },
-        "topicId": { "type": "string" },
-        "subtopicId": { "type": "string" },
-        "question": { "type": "string" },
-        "options": { "type": "array" },
-        "correctIndex": { "type": "integer" },
-        "explanation": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["userId", "subjectId", "topicId", "subtopicId", "question", "options", "correctIndex", "createdAt", "updatedAt"]
-    },
-    "TestResult": {
-      "title": "TestResult",
-      "description": "Score record from an HTML mock test or MCQ practice session.",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "subjectId": { "type": "string" },
-        "topicId": { "type": "string" },
-        "subtopicId": { "type": "string" },
         "noteId": { "type": "string" },
-        "testTitle": { "type": "string" },
-        "scoreObtained": { "type": "number" },
-        "totalMarks": { "type": "number" },
-        "percentage": { "type": "number" },
-        "summaryText": { "type": "string" },
-        "takenDate": { "type": "string" },
+        "annotationsJson": { "type": "string" },
+        "updatedAtMillis": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "subjectId", "topicId", "subtopicId", "testTitle", "scoreObtained", "totalMarks", "percentage", "takenDate", "createdAt", "updatedAt"]
+      "required": ["userId", "noteId", "annotationsJson", "updatedAtMillis", "createdAt", "updatedAt"]
     },
-    "StudyLog": {
-      "title": "StudyLog",
-      "description": "Daily revision & exam plan entry (planned or studied).",
+    "BookmarkItem": {
+      "title": "BookmarkItem",
+      "description": "Student bookmark for important/wrong questions, notes, topics, or PDF pages.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
-        "dateKey": { "type": "string" },
-        "entryType": { "type": "string", "enum": ["PLANNED", "STUDIED"] },
+        "bookmarkType": { "type": "string" },
         "title": { "type": "string" },
-        "subjectName": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "refId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "topicId": { "type": "string" },
         "subtopicId": { "type": "string" },
-        "completed": { "type": "boolean" },
-        "notes": { "type": "string" },
+        "pageIndex": { "type": "integer" },
+        "questionJson": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "dateKey", "entryType", "title", "completed", "createdAt", "updatedAt"]
+      "required": ["userId", "bookmarkType", "title", "createdAtMillis", "createdAt", "updatedAt"]
     },
-    "RevisionDiaryEntry": {
-      "title": "RevisionDiaryEntry",
-      "description": "Revision Diary entry with study material and source name.",
+    "WhatsAppRequestRecord": {
+      "title": "WhatsAppRequestRecord",
+      "description": "Student material/test request record visible to the Admin for tracking.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
-        "dateKey": { "type": "string" },
-        "title": { "type": "string" },
-        "subjectName": { "type": "string" },
-        "sourceName": { "type": "string" },
-        "content": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentEmail": { "type": "string" },
+        "requestType": { "type": "string" },
+        "subject": { "type": "string" },
+        "topic": { "type": "string" },
+        "subtopic": { "type": "string" },
+        "extraMessage": { "type": "string" },
+        "status": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "dateKey", "title", "sourceName", "content", "createdAt", "updatedAt"]
+      "required": ["userId", "studentName", "requestType", "subject", "status", "createdAt", "updatedAt"]
+    },
+    "StudentSummary": {
+      "title": "StudentSummary",
+      "description": "Student summary metrics for Admin Analytics dashboard.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "downloadsCount": { "type": "integer" },
+        "testAttemptsCount": { "type": "integer" },
+        "averageScorePct": { "type": "number" },
+        "lastActiveMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "downloadsCount", "testAttemptsCount", "averageScorePct", "lastActiveMillis", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "User profile, exam settings, and theme."
-    },
-    "/users/{userId}/subjects/{subjectId}": {
-      "schema": { "$ref": "#/entities/Subject" },
-      "description": "User subjects."
-    },
-    "/users/{userId}/topics/{topicId}": {
-      "schema": { "$ref": "#/entities/Topic" },
-      "description": "User topics."
-    },
-    "/users/{userId}/subtopics/{subtopicId}": {
-      "schema": { "$ref": "#/entities/Subtopic" },
-      "description": "User subtopics."
-    },
-    "/users/{userId}/notes/{noteId}": {
-      "schema": { "$ref": "#/entities/StudyNote" },
-      "description": "User notes and folders."
-    },
-    "/users/{userId}/videos/{videoId}": {
-      "schema": { "$ref": "#/entities/VideoLink" },
-      "description": "User YouTube links."
-    },
-    "/users/{userId}/mcqs/{mcqId}": {
-      "schema": { "$ref": "#/entities/McqQuestion" },
-      "description": "User practice MCQs."
-    },
-    "/users/{userId}/testResults/{resultId}": {
-      "schema": { "$ref": "#/entities/TestResult" },
-      "description": "HTML test and MCQ attempt scores."
-    },
-    "/users/{userId}/studyLogs/{logId}": {
-      "schema": { "$ref": "#/entities/StudyLog" },
-      "description": "Daily revision logs and exam study plans."
-    },
-    "/users/{userId}/revisionDiary/{entryId}": {
-      "schema": { "$ref": "#/entities/RevisionDiaryEntry" },
-      "description": "Revision Diary entries with source names and notes."
-    }
+    "/users/{userId}": { "schema": { "$ref": "#/entities/UserProfile" } },
+    "/users/{userId}/personalNotes/{noteId}": { "schema": { "$ref": "#/entities/PersonalNote" } },
+    "/users/{userId}/pdfAnnotations/{docId}": { "schema": { "$ref": "#/entities/PdfAnnotationDoc" } },
+    "/users/{userId}/bookmarks/{bookmarkId}": { "schema": { "$ref": "#/entities/BookmarkItem" } },
+    "/sharedContent/{contentId}": { "schema": { "$ref": "#/entities/SharedContentItem" } },
+    "/whatsappRequests/{requestId}": { "schema": { "$ref": "#/entities/WhatsAppRequestRecord" } },
+    "/studentSummaries/{userId}": { "schema": { "$ref": "#/entities/StudentSummary" } }
   }
 }

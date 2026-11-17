@@ -3,8 +3,12 @@ package com.example.data.remote
 import android.content.Context
 import com.example.R
 import com.example.data.local.OfflineVaultSnapshot
+import com.example.data.model.BookmarkItem
+import com.example.data.model.CloudPdfAnnotationDoc
+import com.example.data.model.DefaultSubjectsSeed
 import com.example.data.model.McqQuestion
 import com.example.data.model.NoteType
+import com.example.data.model.PersonalNote
 import com.example.data.model.RevisionDiaryEntry
 import com.example.data.model.StudyLog
 import com.example.data.model.StudyNote
@@ -143,21 +147,54 @@ class StudyRepository(
         observeCollection(uid, "revisionDiary", RevisionDiaryEntry::class.java)
             .map { list -> list.sortedByDescending { it.updatedAt?.seconds ?: 0L } }
 
-    suspend fun ensureUserProfile(uid: String, displayName: String): Result<Unit> {
+    fun observePersonalNotes(uid: String): Flow<List<PersonalNote>> =
+        observeCollection(uid, "personalNotes", PersonalNote::class.java)
+            .map { list -> list.sortedByDescending { it.updatedAtMillis } }
+
+    fun observePdfAnnotations(uid: String): Flow<List<CloudPdfAnnotationDoc>> =
+        observeCollection(uid, "pdfAnnotations", CloudPdfAnnotationDoc::class.java)
+
+    fun observeBookmarks(uid: String): Flow<List<BookmarkItem>> =
+        observeCollection(uid, "bookmarks", BookmarkItem::class.java)
+            .map { list -> list.sortedByDescending { it.createdAtMillis } }
+
+    suspend fun ensureUserProfile(
+        uid: String,
+        displayName: String,
+        email: String? = null,
+        photoUrl: String? = null,
+        role: String = "student",
+    ): Result<Unit> {
         val path = "users/$uid"
         return try {
             requireUserId(uid)
             val snap = userDoc(uid).get().await()
+            val safeName = displayName.trim().ifBlank { "Learner" }.take(100)
+            val safeEmail = email?.trim()?.takeIf { it.isNotBlank() }?.take(160)
+            val safePhoto = photoUrl?.trim()?.takeIf { it.isNotBlank() }?.take(600)
+            val safeRole = if (role == "admin") "admin" else "student"
+
             if (!snap.exists()) {
-                val safeName = displayName.trim().ifBlank { "Learner" }.take(100)
-                val payload = mapOf(
+                val payload = mutableMapOf<String, Any>(
                     "userId" to uid,
                     "displayName" to safeName,
-                    "themeId" to "midnight_teal",
+                    "role" to safeRole,
+                    "themeId" to "bunts_royal_light",
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 )
+                safeEmail?.let { payload["email"] = it }
+                safePhoto?.let { payload["photoUrl"] = it }
                 userDoc(uid).set(payload).await()
+            } else {
+                val updates = mutableMapOf<String, Any>(
+                    "role" to safeRole,
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+                if (snap.getString("displayName").isNullOrBlank()) updates["displayName"] = safeName
+                safeEmail?.let { updates["email"] = it }
+                safePhoto?.let { updates["photoUrl"] = it }
+                userDoc(uid).update(updates).await()
             }
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -213,86 +250,47 @@ class StudyRepository(
         val path = "users/$uid/subjects"
         return try {
             requireUserId(uid)
-            val existing = userDoc(uid).collection("subjects").limit(1).get().await()
-            if (!existing.isEmpty) return Result.success(Unit)
+            val existingSubjects = userDoc(uid).collection("subjects").get().await()
+            val existingIds = existingSubjects.documents.map { it.id }.toSet()
+            val missing = DefaultSubjectsSeed.all12Subjects.filter { it.id !in existingIds }
+            if (missing.isEmpty()) return Result.success(Unit)
 
             val batch = db.batch()
-            data class SeedSub(
-                val id: String,
-                val en: String,
-                val hi: String,
-                val icon: String,
-                val color: String,
-                val order: Long,
-                val topics: List<Pair<String, List<String>>>
-            )
-
-            val defaults = listOf(
-                SeedSub("subj_history", "History", "इतिहास", "history", "#F6AD55", 0L, listOf(
-                    "Ancient India (प्राचीन भारत)" to listOf("Indus Valley Civilization", "Vedic Period & Mauryas"),
-                    "Medieval India (मध्यकालीन भारत)" to listOf("Delhi Sultanate", "Mughal Empire"),
-                    "Modern India (आधुनिक भारत)" to listOf("1857 Revolt", "Indian National Movement")
-                )),
-                SeedSub("subj_polity", "Polity", "राज व्यवस्था", "polity", "#4FD1C5", 1L, listOf(
-                    "Indian Constitution (संविधान)" to listOf("Preamble & Making", "Fundamental Rights (Art 12-35)"),
-                    "Union & Parliament (संसद)" to listOf("President & PM", "Lok Sabha & Rajya Sabha")
-                )),
-                SeedSub("subj_geography", "Geography", "भूगोल", "geography", "#68D391", 2L, listOf(
-                    "Indian Geography (भारत का भूगोल)" to listOf("Himalayas & Plains", "Indian Rivers & Monsoon"),
-                    "Physical Geography (भौतिक भूगोल)" to listOf("Atmosphere & Climate")
-                )),
-                SeedSub("subj_english", "English", "इंग्लिश", "english", "#90CDF4", 3L, listOf(
-                    "Grammar" to listOf("Tenses & Voice", "Prepositions & Articles"),
-                    "Vocabulary" to listOf("Idioms, Phrases & One-Word")
-                )),
-                SeedSub("subj_maths", "Maths", "गणित", "maths", "#818CF8", 4L, listOf(
-                    "Arithmetic (अंकगणित)" to listOf("Percentage & Profit-Loss", "Time, Speed & Distance"),
-                    "Advance Maths" to listOf("Algebra & Geometry", "Trigonometry")
-                )),
-                SeedSub("subj_science", "Science", "विज्ञान", "science", "#F472B6", 5L, listOf(
-                    "Physics (भौतिक विज्ञान)" to listOf("Motion, Force & Optics", "Electricity & Magnetism"),
-                    "Chemistry (रसायन विज्ञान)" to listOf("Atomic Structure & Acids", "Periodic Table"),
-                    "Biology (जीव विज्ञान)" to listOf("Cell & Human Physiology", "Vitamins & Diseases")
-                )),
-                SeedSub("subj_reasoning", "Reasoning", "रीजनिंग", "reasoning", "#FBBF24", 6L, listOf(
-                    "Verbal Reasoning" to listOf("Coding-Decoding & Series", "Syllogism & Blood Relations"),
-                    "Non-Verbal & Puzzles" to listOf("Seating Arrangement & Dice")
-                ))
-            )
-
-            defaults.forEachIndexed { sIdx, s ->
-                val sRef = userDoc(uid).collection("subjects").document(s.id)
-                batch.set(sRef, mapOf(
-                    "userId" to uid,
-                    "nameEn" to s.en,
-                    "nameHi" to s.hi,
-                    "iconKey" to s.icon,
-                    "colorHex" to s.color,
-                    "sortOrder" to s.order,
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp(),
-                ))
-                s.topics.forEachIndexed { tIdx, (tName, subList) ->
-                    val tId = "topic_${sIdx}_${tIdx}"
-                    val tRef = userDoc(uid).collection("topics").document(tId)
-                    batch.set(tRef, mapOf(
+            DefaultSubjectsSeed.all12Subjects.forEachIndexed { sIdx, s ->
+                if (s.id !in existingIds) {
+                    val sRef = userDoc(uid).collection("subjects").document(s.id)
+                    batch.set(sRef, mapOf(
                         "userId" to uid,
-                        "subjectId" to s.id,
-                        "name" to tName,
+                        "nameEn" to s.nameEn,
+                        "nameHi" to s.nameHi,
+                        "iconKey" to s.iconKey,
+                        "colorHex" to s.colorHex,
+                        "sortOrder" to s.sortOrder,
                         "createdAt" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp(),
                     ))
-                    subList.forEachIndexed { subIdx, subName ->
-                        val subId = "sub_${sIdx}_${tIdx}_${subIdx}"
-                        val subRef = userDoc(uid).collection("subtopics").document(subId)
-                        batch.set(subRef, mapOf(
+                    s.topics.forEachIndexed { tIdx, (tName, subList) ->
+                        val tId = "topic_${sIdx}_${tIdx}"
+                        val tRef = userDoc(uid).collection("topics").document(tId)
+                        batch.set(tRef, mapOf(
                             "userId" to uid,
                             "subjectId" to s.id,
-                            "topicId" to tId,
-                            "name" to subName,
+                            "name" to tName,
                             "createdAt" to FieldValue.serverTimestamp(),
                             "updatedAt" to FieldValue.serverTimestamp(),
                         ))
+                        subList.forEachIndexed { subIdx, subName ->
+                            val subId = "sub_${sIdx}_${tIdx}_${subIdx}"
+                            val subRef = userDoc(uid).collection("subtopics").document(subId)
+                            batch.set(subRef, mapOf(
+                                "userId" to uid,
+                                "subjectId" to s.id,
+                                "topicId" to tId,
+                                "name" to subName,
+                                "createdAt" to FieldValue.serverTimestamp(),
+                                "updatedAt" to FieldValue.serverTimestamp(),
+                            ))
+                        }
                     }
                 }
             }
@@ -463,6 +461,7 @@ class StudyRepository(
         noteType: NoteType,
         localFileName: String? = null,
         htmlContent: String? = null,
+        isMockTest: Boolean = false,
     ): Result<String> {
         val path = "users/$uid/notes/$noteId"
         return try {
@@ -480,6 +479,7 @@ class StudyRepository(
                 "noteType" to noteType.name,
                 "localFileName" to localFileName?.take(200),
                 "htmlContent" to safeHtml,
+                "isMockTest" to isMockTest,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp(),
             ).filterValues { it != null } as Map<String, Any>
@@ -683,14 +683,23 @@ class StudyRepository(
         scoreObtained: Double,
         totalMarks: Double,
         summaryText: String?,
+        totalQuestions: Int = 0,
+        attemptedCount: Int = 0,
+        correctCount: Int = 0,
+        wrongCount: Int = 0,
+        unattemptedCount: Int = 0,
+        durationSeconds: Long = 0L,
+        testMode: String = "EXAM",
+        breakdownJson: String? = null,
+        docId: String = "res_${newValidId()}",
     ): Result<String> {
-        val docId = "res_${newValidId()}"
         val path = "users/$uid/testResults/$docId"
         return try {
             requireUserId(uid)
             val safeObtained = scoreObtained.coerceAtLeast(0.0)
             val safeTotal = totalMarks.coerceAtLeast(0.0)
             val pct = if (safeTotal > 0.0) ((safeObtained / safeTotal) * 100.0).coerceIn(0.0, 100.0) else 0.0
+            val safeMode = if (testMode == "PRACTICE") "PRACTICE" else "EXAM"
             val payload = mapOf(
                 "userId" to uid,
                 "subjectId" to subjectId,
@@ -701,6 +710,14 @@ class StudyRepository(
                 "scoreObtained" to safeObtained,
                 "totalMarks" to safeTotal,
                 "percentage" to pct,
+                "totalQuestions" to totalQuestions.coerceAtLeast(0),
+                "attemptedCount" to attemptedCount.coerceAtLeast(0),
+                "correctCount" to correctCount.coerceAtLeast(0),
+                "wrongCount" to wrongCount.coerceAtLeast(0),
+                "unattemptedCount" to unattemptedCount.coerceAtLeast(0),
+                "durationSeconds" to durationSeconds.coerceAtLeast(0L),
+                "testMode" to safeMode,
+                "breakdownJson" to breakdownJson?.take(340_000),
                 "summaryText" to summaryText?.trim()?.takeIf { it.isNotEmpty() }?.take(300),
                 "takenDate" to todayKey(),
                 "createdAt" to FieldValue.serverTimestamp(),
@@ -925,6 +942,146 @@ class StudyRepository(
         }
     }
 
+    suspend fun savePersonalNote(uid: String, note: PersonalNote): Result<String> {
+        val docId = note.id.ifBlank { "pnote_${newValidId()}" }
+        val path = "users/$uid/personalNotes/$docId"
+        return try {
+            requireUserId(uid)
+            val ref = userDoc(uid).collection("personalNotes").document(docId)
+            val existing = ref.get().await()
+            val updatedMillis = note.updatedAtMillis.takeIf { it > 0L } ?: System.currentTimeMillis()
+            if (!existing.exists()) {
+                val payload = mapOf(
+                    "userId" to uid,
+                    "subjectId" to note.subjectId.take(128),
+                    "subjectName" to note.subjectName.take(100),
+                    "topicName" to note.topicName.take(120),
+                    "title" to note.title.trim().ifBlank { "Untitled Note" }.take(160),
+                    "contentSummary" to note.contentSummary.take(500),
+                    "blocksJson" to note.blocksJson.take(340_000),
+                    "updatedAtMillis" to updatedMillis,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+                ref.set(payload).await()
+            } else {
+                ref.update(
+                    mapOf(
+                        "subjectId" to note.subjectId.take(128),
+                        "subjectName" to note.subjectName.take(100),
+                        "topicName" to note.topicName.take(120),
+                        "title" to note.title.trim().ifBlank { "Untitled Note" }.take(160),
+                        "contentSummary" to note.contentSummary.take(500),
+                        "blocksJson" to note.blocksJson.take(340_000),
+                        "updatedAtMillis" to updatedMillis,
+                        "updatedAt" to FieldValue.serverTimestamp(),
+                    )
+                ).await()
+            }
+            Result.success(docId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deletePersonalNote(uid: String, noteId: String): Result<Unit> {
+        val path = "users/$uid/personalNotes/$noteId"
+        return try {
+            requireUserId(uid)
+            userDoc(uid).collection("personalNotes").document(noteId).delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun savePdfAnnotationDoc(uid: String, noteId: String, annotationsJson: String, updatedAtMillis: Long): Result<Unit> {
+        val safeDocId = noteId.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(128)
+        val path = "users/$uid/pdfAnnotations/$safeDocId"
+        return try {
+            requireUserId(uid)
+            val ref = userDoc(uid).collection("pdfAnnotations").document(safeDocId)
+            val existing = ref.get().await()
+            if (!existing.exists()) {
+                ref.set(
+                    mapOf(
+                        "userId" to uid,
+                        "noteId" to safeDocId,
+                        "annotationsJson" to annotationsJson.take(580_000),
+                        "updatedAtMillis" to updatedAtMillis.coerceAtLeast(0L),
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp(),
+                    )
+                ).await()
+            } else {
+                ref.update(
+                    mapOf(
+                        "annotationsJson" to annotationsJson.take(580_000),
+                        "updatedAtMillis" to updatedAtMillis.coerceAtLeast(0L),
+                        "updatedAt" to FieldValue.serverTimestamp(),
+                    )
+                ).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun saveBookmark(uid: String, item: BookmarkItem): Result<String> {
+        val docId = item.id.ifBlank { "bmk_${newValidId()}" }
+        val path = "users/$uid/bookmarks/$docId"
+        return try {
+            requireUserId(uid)
+            val createdMillis: Long = if (item.createdAtMillis > 0L) item.createdAtMillis else System.currentTimeMillis()
+            val payload = mutableMapOf<String, Any>(
+                "userId" to uid,
+                "bookmarkType" to item.bookmarkType,
+                "title" to item.title.trim().ifBlank { "Bookmark" }.take(200),
+                "subtitle" to item.subtitle.take(300),
+                "refId" to item.refId.take(128),
+                "subjectId" to item.subjectId.take(128),
+                "topicId" to item.topicId.take(128),
+                "subtopicId" to item.subtopicId.take(128),
+                "pageIndex" to item.pageIndex.coerceAtLeast(0),
+                "createdAtMillis" to createdMillis,
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp(),
+            )
+            item.questionJson?.take(9800)?.let { payload["questionJson"] = it }
+            userDoc(uid).collection("bookmarks").document(docId).set(payload).await()
+            Result.success(docId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteBookmark(uid: String, bookmarkId: String): Result<Unit> {
+        val path = "users/$uid/bookmarks/$bookmarkId"
+        return try {
+            requireUserId(uid)
+            userDoc(uid).collection("bookmarks").document(bookmarkId).delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
+
     suspend fun syncOfflineSnapshotToCloud(uid: String, snapshot: OfflineVaultSnapshot): Result<Unit> {
         val path = "users/$uid"
         return try {
@@ -1019,6 +1176,14 @@ class StudyRepository(
                     "scoreObtained" to r.scoreObtained,
                     "totalMarks" to r.totalMarks,
                     "percentage" to r.percentage,
+                    "totalQuestions" to r.totalQuestions,
+                    "attemptedCount" to r.attemptedCount,
+                    "correctCount" to r.correctCount,
+                    "wrongCount" to r.wrongCount,
+                    "unattemptedCount" to r.unattemptedCount,
+                    "durationSeconds" to r.durationSeconds,
+                    "testMode" to r.testMode,
+                    "breakdownJson" to r.breakdownJson?.take(340_000),
                     "summaryText" to r.summaryText?.take(300),
                     "takenDate" to r.takenDate.take(20),
                     "createdAt" to FieldValue.serverTimestamp(),
@@ -1052,6 +1217,48 @@ class StudyRepository(
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp(),
                 ).filterValues { it != null } as Map<String, Any>
+            }
+            snapshot.personalNotes.forEach { p ->
+                writes += userDoc(uid).collection("personalNotes").document(p.id) to mapOf(
+                    "userId" to uid,
+                    "subjectId" to p.subjectId.take(128),
+                    "subjectName" to p.subjectName.take(100),
+                    "topicName" to p.topicName.take(120),
+                    "title" to p.title.take(160),
+                    "contentSummary" to p.contentSummary.take(500),
+                    "blocksJson" to p.blocksJson.take(340_000),
+                    "updatedAtMillis" to p.updatedAtMillis,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
+            }
+            snapshot.bookmarks.forEach { b ->
+                writes += userDoc(uid).collection("bookmarks").document(b.id) to mapOf(
+                    "userId" to uid,
+                    "bookmarkType" to b.bookmarkType,
+                    "title" to b.title.take(200),
+                    "subtitle" to b.subtitle.take(300),
+                    "refId" to b.refId.take(128),
+                    "subjectId" to b.subjectId.take(128),
+                    "topicId" to b.topicId.take(128),
+                    "subtopicId" to b.subtopicId.take(128),
+                    "pageIndex" to b.pageIndex,
+                    "questionJson" to b.questionJson?.take(9800),
+                    "createdAtMillis" to b.createdAtMillis,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                ).filterValues { it != null } as Map<String, Any>
+            }
+            snapshot.pdfAnnotations.forEach { a ->
+                val safeId = a.noteId.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(128)
+                writes += userDoc(uid).collection("pdfAnnotations").document(safeId) to mapOf(
+                    "userId" to uid,
+                    "noteId" to safeId,
+                    "annotationsJson" to a.annotationsJson.take(580_000),
+                    "updatedAtMillis" to a.updatedAtMillis,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp(),
+                )
             }
 
             writes.chunked(400).forEach { chunk ->

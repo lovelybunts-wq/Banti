@@ -31,6 +31,7 @@ data class GoogleDriveProfile(
     val id: String,
     val email: String,
     val name: String,
+    val photoUrl: String? = null,
 )
 
 data class DriveBackupSummary(
@@ -116,7 +117,8 @@ class GoogleDriveBackupManager {
                     val email = json.optString("email", "").trim()
                     val sub = json.optString("sub", "").ifBlank { email }.ifBlank { "google_user" }
                     val name = json.optString("name", "").ifBlank { email.substringBefore("@") }.ifBlank { "Google User" }
-                    Result.success(GoogleDriveProfile(id = "drive_${sub.take(32)}", email = email, name = name))
+                    val picture = json.optString("picture", "").trim().takeIf { it.isNotBlank() }
+                    Result.success(GoogleDriveProfile(id = "drive_${sub.take(32)}", email = email, name = name, photoUrl = picture))
                 }
             } catch (e: Exception) {
                 Result.failure(e)

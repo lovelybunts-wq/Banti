@@ -1,6 +1,6 @@
 {
   "name": "Learn Talent",
-  "description": "Organized study notes, HTML mock tests, YouTube links, biometric lock, cloud sync, and exam revision planner.",
+  "description": "LEARN TALENT by Bunts — Online and offline study platform with 12 subjects, shared cloud library, interactive PDF digital pen annotations, HTML CBT mock tests, personal notes maker, bookmarks, revision diary, and admin analytics.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
