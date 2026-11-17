@@ -27,12 +27,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Assignment
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
+import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.Analytics
 import androidx.compose.material.icons.rounded.Assessment
-import androidx.compose.material.icons.rounded.Assignment
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Book
 import androidx.compose.material.icons.rounded.Bookmark
@@ -49,7 +51,6 @@ import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Quiz
@@ -58,7 +59,6 @@ import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Sync
-import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -559,12 +559,12 @@ fun HomeSubjectsScreen(
                                     listOf(
                                         DashboardGridTile("Mock Test", "CBT Exam", Icons.Rounded.Quiz, BrandColors.RoyalBlue, "tile_mock_test", onOpenTestsTab),
                                         DashboardGridTile("Practice Test", "Quick MCQ", Icons.Rounded.School, BrandColors.SkyBlue, "tile_practice_test", onOpenTestsTab),
-                                        DashboardGridTile("Study Material", "PDFs & Books", Icons.Rounded.MenuBook, Color(0xFF4F46E5), "tile_study_material", onOpenStudyTab),
+                                        DashboardGridTile("Study Material", "PDFs & Books", Icons.AutoMirrored.Rounded.MenuBook, Color(0xFF4F46E5), "tile_study_material", onOpenStudyTab),
                                         DashboardGridTile("Subject Notes", "${personalNotes.size} Notes", Icons.Rounded.EditNote, Color(0xFF059669), "home_personal_notes_card", onOpenPersonalNotes),
                                         DashboardGridTile("Test Results", "${testResults.size} Done", Icons.Rounded.Assessment, Color(0xFFD97706), "tile_test_results", onOpenResultsTab),
                                         DashboardGridTile("Performance", "Analytics", Icons.Rounded.Analytics, Color(0xFF7C3AED), "tile_performance", onOpenResultsTab),
                                         DashboardGridTile("Bookmarks", "${bookmarks.size} Saved", Icons.Rounded.Bookmarks, Color(0xFFE11D48), "home_bookmarks_card", onOpenBookmarks),
-                                        DashboardGridTile("My Progress", "Revision (${diaryEntries.size})", Icons.Rounded.TrendingUp, Color(0xFF0D9488), "home_yesterday_revision_card", onOpenRevisionTab),
+                                        DashboardGridTile("My Progress", "Revision (${diaryEntries.size})", Icons.AutoMirrored.Rounded.TrendingUp, Color(0xFF0D9488), "home_yesterday_revision_card", onOpenRevisionTab),
                                         DashboardGridTile("More", "Tools & Sync", Icons.Rounded.GridView, BrandColors.DeepNavy, "tile_more_tools") { showDrawerSheet = true },
                                     )
                                 }
@@ -679,7 +679,7 @@ fun HomeSubjectsScreen(
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
                                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                                TactileIconOrb(icon = Icons.Rounded.Assignment, tint = theme.primary, size = 44.dp)
+                                                TactileIconOrb(icon = Icons.AutoMirrored.Rounded.Assignment, tint = theme.primary, size = 44.dp)
                                                 Spacer(Modifier.width(12.dp))
                                                 Column {
                                                     Text("Full Length Exam Suites", style = MaterialTheme.typography.titleSmall, color = theme.primary, fontWeight = FontWeight.Bold)
@@ -826,7 +826,7 @@ fun HomeSubjectsScreen(
             ) {
                 LearnTalentBrandHeader(customLogoFile = null, subtitle = resolvedName)
                 Spacer(Modifier.height(4.dp))
-                DrawerMenuItem(Icons.Rounded.Assignment, "Full Length Exams", "${fullLengthExams.size} Exam Categories", theme.primary) {
+                DrawerMenuItem(Icons.AutoMirrored.Rounded.Assignment, "Full Length Exams", "${fullLengthExams.size} Exam Categories", theme.primary) {
                     showDrawerSheet = false; onOpenFullLengthTests()
                 }
                 DrawerMenuItem(Icons.Rounded.Book, "Revision Diary & Study Plan", "${diaryEntries.size} diary entries", theme.secondary) {

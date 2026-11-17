@@ -15,8 +15,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Group
-import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -90,7 +90,7 @@ internal fun AdminAnalyticsTab(
             Tactile3DCard(accentColor = theme.primary, modifier = Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        androidx.compose.material3.Icon(Icons.Rounded.TrendingUp, contentDescription = null, tint = theme.primary)
+                        androidx.compose.material3.Icon(Icons.AutoMirrored.Rounded.TrendingUp, contentDescription = null, tint = theme.primary)
                         Spacer(Modifier.width(8.dp))
                         Text("Platform Average Score", style = MaterialTheme.typography.titleMedium, color = theme.onSurface)
                     }

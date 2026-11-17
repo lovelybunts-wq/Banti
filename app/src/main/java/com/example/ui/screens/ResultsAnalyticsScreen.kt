@@ -19,13 +19,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Analytics
 import androidx.compose.material.icons.rounded.Assessment
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.PictureAsPdf
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -296,7 +296,7 @@ fun ResultsAnalyticsScreen(
                             color = theme.onBackground,
                             fontWeight = FontWeight.Bold
                         )
-                        Tactile3DBadge(text = "Synced", color = theme.success, icon = Icons.Rounded.TrendingUp)
+                        Tactile3DBadge(text = "Synced", color = theme.success, icon = Icons.AutoMirrored.Rounded.TrendingUp)
                     }
                 }
 

@@ -22,9 +22,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Assignment
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Assessment
-import androidx.compose.material.icons.rounded.Assignment
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Quiz
@@ -174,7 +174,7 @@ fun FullLengthExamsScreen(
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                            TactileIconOrb(icon = Icons.Rounded.Assignment, tint = theme.primary, size = 44.dp)
+                                            TactileIconOrb(icon = Icons.AutoMirrored.Rounded.Assignment, tint = theme.primary, size = 44.dp)
                                             Spacer(Modifier.width(12.dp))
                                             Column {
                                                 Text("एग्जाम के अनुसार फुल लेंथ टेस्ट", style = MaterialTheme.typography.titleMedium, color = theme.onSurface)

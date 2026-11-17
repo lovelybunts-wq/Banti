@@ -24,11 +24,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FormatBold
-import androidx.compose.material.icons.rounded.FormatListBulleted
 import androidx.compose.material.icons.rounded.Highlight
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PictureAsPdf
@@ -308,7 +308,7 @@ private fun PersonalNoteEditorView(
                 }
                 item {
                     OutlinedButton(onClick = { blocks = blocks + PersonalNoteBlock(UUID.randomUUID().toString(), PersonalNoteBlockType.BULLET.name, "", fontSizeSp = fontSizeSp) }) {
-                        Icon(Icons.Rounded.FormatListBulleted, contentDescription = null, modifier = Modifier.size(16.dp)); Text(" Bullet")
+                        Icon(Icons.AutoMirrored.Rounded.FormatListBulleted, contentDescription = null, modifier = Modifier.size(16.dp)); Text(" Bullet")
                     }
                 }
                 item {

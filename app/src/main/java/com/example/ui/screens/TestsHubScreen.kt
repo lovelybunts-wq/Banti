@@ -20,7 +20,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Assignment
+import androidx.compose.material.icons.automirrored.rounded.Assignment
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Quiz
@@ -185,7 +185,7 @@ fun TestsHubScreen(
                                     ),
                                     modifier = Modifier.testTag("tests_hub_full_length_btn")
                                 ) {
-                                    Icon(Icons.Rounded.Assignment, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.AutoMirrored.Rounded.Assignment, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
                                     Text("Open Full Length Exam Suites", fontWeight = FontWeight.Bold)
                                 }
@@ -379,7 +379,7 @@ fun TestsHubScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    TactileIconOrb(icon = Icons.Rounded.Assignment, tint = theme.primary, size = 42.dp)
+                                    TactileIconOrb(icon = Icons.AutoMirrored.Rounded.Assignment, tint = theme.primary, size = 42.dp)
                                     Spacer(Modifier.width(12.dp))
                                     Column {
                                         Text(exam.name, style = MaterialTheme.typography.titleSmall, color = theme.onSurface, fontWeight = FontWeight.Bold)
